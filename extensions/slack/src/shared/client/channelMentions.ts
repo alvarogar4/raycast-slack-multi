@@ -124,7 +124,11 @@ export async function searchChannelMentions(query: string, sources: ChannelMenti
 
 type GetChannel = (id: string) => Promise<{ ok?: boolean; error?: string; channel?: SlackConversation }>;
 
-export async function readChannelMention(uri: string, getChannel: GetChannel) {
+export async function readChannelMention(
+  uri: string,
+  getChannel: GetChannel,
+  source?: { teamId: string; registration: string },
+) {
   const match = /^slack:\/\/channels\/(T[A-Z0-9]{8,})\/([CG][A-Z0-9]{8,})$/.exec(uri);
   if (!match) throw new Error("Invalid Slack channel URI.");
   const [, teamId, channelId] = match;
@@ -148,7 +152,8 @@ export async function readChannelMention(uri: string, getChannel: GetChannel) {
     text: JSON.stringify(
       {
         id: channel.id,
-        teamId,
+        teamId: source?.teamId ?? teamId,
+        ...(source && { workspace: source.teamId + ":" + source.registration }),
         name: channel.name,
         isPrivate: channel.is_private === true,
         isArchived: channel.is_archived === true,
@@ -156,7 +161,7 @@ export async function readChannelMention(uri: string, getChannel: GetChannel) {
         purpose: channel.purpose?.value || undefined,
         memberCount: channel.num_members,
         mention: `<#${channel.id}>`,
-        url: `slack://channel?team=${teamId}&id=${channelId}`,
+        url: `slack://channel?team=${source?.teamId ?? teamId}&id=${channelId}`,
       },
       null,
       2,

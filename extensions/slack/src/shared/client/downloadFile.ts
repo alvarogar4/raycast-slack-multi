@@ -1,6 +1,6 @@
 import { createWriteStream } from "node:fs";
 import { mkdir, rm, stat } from "node:fs/promises";
-import http, { type IncomingMessage } from "node:http";
+import type { IncomingMessage } from "node:http";
 import https from "node:https";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
@@ -29,7 +29,8 @@ function isSlackHost(hostname: string): boolean {
  * attached to slack.com hosts; Slack frequently redirects `url_private_download`
  * to a signed URL on another host where forwarding the token would be unsafe.
  */
-function requestWithRedirects(url: string, token: string, redirectsLeft = MAX_REDIRECTS): Promise<IncomingMessage> {
+async function requestWithRedirects(url: string, redirectsLeft = MAX_REDIRECTS): Promise<IncomingMessage> {
+  const token = await getSlackToken();
   return new Promise((resolve, reject) => {
     let parsed: URL;
     try {
@@ -39,10 +40,13 @@ function requestWithRedirects(url: string, token: string, redirectsLeft = MAX_RE
       return;
     }
 
-    const client = parsed.protocol === "http:" ? http : https;
+    if (parsed.protocol !== "https:") {
+      reject(new Error("Slack file downloads require HTTPS."));
+      return;
+    }
     const agent = getProxyAgent();
 
-    const request = client.get(
+    const request = https.get(
       parsed,
       {
         headers: isSlackHost(parsed.hostname) ? { Authorization: `Bearer ${token}` } : {},
@@ -58,7 +62,7 @@ function requestWithRedirects(url: string, token: string, redirectsLeft = MAX_RE
             return;
           }
           const nextUrl = new URL(response.headers.location, parsed).toString();
-          resolve(requestWithRedirects(nextUrl, token, redirectsLeft - 1));
+          resolve(requestWithRedirects(nextUrl, redirectsLeft - 1));
           return;
         }
 
@@ -174,15 +178,10 @@ export async function downloadSlackFile(params: {
   filename: string;
   destinationDir?: string;
 }): Promise<DownloadResult> {
-  const token = getSlackToken();
-  if (!token) {
-    throw new Error("No Slack token is available to authenticate the download");
-  }
-
   const dir = expandDownloadDir(params.destinationDir);
   await mkdir(dir, { recursive: true });
 
-  const response = await requestWithRedirects(params.url, token);
+  const response = await requestWithRedirects(params.url);
   const body = await bodyAfterAuthenticationCheck(response);
 
   // Reserve the destination exclusively so concurrent downloads of the same

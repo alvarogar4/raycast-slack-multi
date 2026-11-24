@@ -1,8 +1,11 @@
-import { getSlackWebClient } from "../shared/client/WebClient";
+import { workspaceKey } from "../shared/client/workspaces";
+import { getSlackWebClient, getWorkspace } from "../shared/client/WebClient";
 import { formatSlackFiles, getMessageText } from "../shared/utils";
 import { withSlackClient } from "../shared/withSlackClient";
 
 type Input = {
+  /** Slack team ID or unique workspace name. Ask the user to choose when ambiguous. */
+  workspace?: string;
   /**
    * The Slack channel ID that contains the thread. Use Get Channels, Get Channel History, or Search Messages to find it.
    *
@@ -145,4 +148,10 @@ async function readThread(input: Input) {
   };
 }
 
-export default withSlackClient(readThread);
+export default async function run(input: Input) {
+  return withSlackClient(input, async (input) => {
+    const output = await readThread(input);
+    const source = { teamId: getWorkspace().teamId, workspace: workspaceKey(getWorkspace()) };
+    return { ...output, ...source };
+  });
+}

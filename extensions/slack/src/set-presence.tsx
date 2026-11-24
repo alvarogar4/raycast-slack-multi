@@ -1,12 +1,20 @@
 import { Action, ActionPanel, Color, Form, Icon, Toast, closeMainWindow, showToast } from "@raycast/api";
-import { useCachedPromise } from "@raycast/utils";
+import { usePromise } from "@raycast/utils";
 
 import { SlackClient } from "./shared/client";
-import { withSlackClient } from "./shared/withSlackClient";
+import { WorkspaceTarget, applyToWorkspaces } from "./shared/WorkspaceViews";
+import { inWorkspace } from "./shared/client/WebClient";
+import type { Workspace } from "./shared/client/workspaces";
 import { handleError } from "./shared/utils";
 
-function SetPresence() {
-  const { data: presence, isLoading, mutate } = useCachedPromise(SlackClient.getPresence);
+function SetPresence({ targets }: { targets: Workspace[] }) {
+  const {
+    data: presence,
+    isLoading,
+    mutate,
+  } = usePromise((w: Workspace) => inWorkspace(w, SlackClient.getPresence), [targets[0]], {
+    execute: targets.length === 1,
+  });
 
   let currentStatus = "";
   switch (presence) {
@@ -23,6 +31,7 @@ function SetPresence() {
 
   return (
     <Form
+      navigationTitle={targets.length === 1 ? targets[0].teamName : "All Workspaces"}
       isLoading={isLoading}
       actions={
         <ActionPanel>
@@ -31,11 +40,11 @@ function SetPresence() {
             onSubmit={async ({ presence }) => {
               try {
                 if (presence === "offline") {
-                  await SlackClient.setPresence("away");
+                  await applyToWorkspaces(targets, () => SlackClient.setPresence("away"));
                   await closeMainWindow();
                   await showToast({ style: Toast.Style.Success, title: "Force offline" });
                 } else {
-                  await SlackClient.setPresence("auto");
+                  await applyToWorkspaces(targets, () => SlackClient.setPresence("auto"));
                   await closeMainWindow();
                   await showToast({ style: Toast.Style.Success, title: "Auto" });
                 }
@@ -49,7 +58,14 @@ function SetPresence() {
         </ActionPanel>
       }
     >
-      <Form.Description title="Current status" text={`${presence === "online" ? "🟢" : "🔴"} ${currentStatus}`} />
+      <Form.Description
+        title="Current status"
+        text={
+          targets.length > 1
+            ? targets.map((w) => w.teamName).join(", ")
+            : `${presence === "online" ? "🟢" : "🔴"} ${currentStatus}`
+        }
+      />
       <Form.Separator />
       <Form.Dropdown
         id="presence"
@@ -67,4 +83,6 @@ function SetPresence() {
   );
 }
 
-export default withSlackClient(SetPresence);
+export default function Command() {
+  return <WorkspaceTarget allowAll>{(targets) => <SetPresence targets={targets} />}</WorkspaceTarget>;
+}

@@ -1,66 +1,79 @@
-import { getPreferenceValues } from "@raycast/api";
-import { OAuthService } from "@raycast/utils";
-import { WebClient } from "@slack/web-api";
+import { environment, getPreferenceValues, LocalStorage } from "@raycast/api";
+import { LogLevel, WebClient, type WebClientOptions } from "@slack/web-api";
 import { HttpsProxyAgent } from "https-proxy-agent";
+import { AsyncLocalStorage } from "node:async_hooks";
+import { mkdir } from "node:fs/promises";
+import { join } from "node:path";
+import { lock } from "proper-lockfile";
 import { createCanvasClient } from "./canvas";
 import { slackRetryConfig } from "./retryPolicy";
-
+import { type Workspace, workspaceStore } from "./workspaces";
 export type { SlackConversation, SlackMember } from "./slackTypes";
 
-const { accessToken, proxyUrl: proxyUrlPref } = getPreferenceValues<Preferences>();
-let slackWebClient: WebClient | null = null;
-let canvasWebClient: WebClient | null = null;
-let currentToken: string | undefined = accessToken;
-
-function getHttpProxy() {
-  if (process.env.HTTPS_PROXY) return "HTTPS_PROXY";
-  if (process.env.HTTP_PROXY) return "HTTP_PROXY";
-  return null;
-}
-
-export function getProxyAgent(): HttpsProxyAgent<string> | undefined {
-  const source = proxyUrlPref ? "preference" : getHttpProxy();
-  const proxyUrl = proxyUrlPref || process.env.HTTPS_PROXY || process.env.HTTP_PROXY;
-
-  if (!proxyUrl || !source) {
-    return undefined;
+export const accounts = workspaceStore(LocalStorage, async (operation) => {
+  await mkdir(environment.supportPath, { recursive: true });
+  const release = await lock(environment.supportPath, {
+    lockfilePath: join(environment.supportPath, "accounts.lock"),
+    retries: { retries: 12, minTimeout: 25, maxTimeout: 300 },
+  });
+  try {
+    return await operation();
+  } finally {
+    await release();
   }
-  return new HttpsProxyAgent(proxyUrl);
-}
-
-export const slack = OAuthService.slack({
-  scope:
-    "users:read users:read.email channels:read groups:read im:read mpim:read chat:write channels:history groups:history im:history mpim:history channels:write groups:write im:write mpim:write users:write dnd:read dnd:write search:read users.profile:write emoji:read users.profile:read files:read files:write reactions:write canvases:read canvases:write",
-  personalAccessToken: accessToken,
-  onAuthorize({ token }) {
-    currentToken = token;
-    const agent = getProxyAgent();
-    // Rate limits keep Slack's default retry budget and wait for Retry-After, including during AI tool calls.
-    // Timeouts and HTTP 5xx stop after two retries so they surface instead of loading for ~30 minutes.
-    slackWebClient = new WebClient(token, { retryConfig: slackRetryConfig(), ...(agent && { agent }) });
-    canvasWebClient = createCanvasClient(token, agent);
-  },
 });
 
-export function getSlackWebClient(): WebClient {
-  if (!slackWebClient) {
-    throw new Error("No slack client initialized");
+export function getProxyAgent() {
+  const { proxyUrl } = getPreferenceValues<Preferences>();
+  const url = proxyUrl || process.env.HTTPS_PROXY || process.env.HTTP_PROXY;
+  return url ? new HttpsProxyAgent(url) : undefined;
+}
+
+function createClient(token: string, options: WebClientOptions = {}) {
+  return new WebClient(token, {
+    agent: getProxyAgent(),
+    retryConfig: slackRetryConfig(),
+    logLevel: LogLevel.ERROR,
+    ...options,
+  });
+}
+
+export function addWorkspace(token: string) {
+  return accounts.add(token, (value) => createClient(value).auth.test());
+}
+
+function createSession(workspace: Workspace, token: string) {
+  // The SDK invokes this on each HTTP attempt, including queued requests and retries.
+  const requestInterceptor: NonNullable<WebClientOptions["requestInterceptor"]> = async (config) => {
+    await accounts.credential(workspace);
+    return config;
+  };
+  return {
+    workspace,
+    client: createClient(token, { teamId: workspace.teamId, requestInterceptor }),
+    canvas: createCanvasClient(token, getProxyAgent(), requestInterceptor),
+  };
+}
+type Session = ReturnType<typeof createSession>;
+const clients = new Map<string, Session>();
+const current = new AsyncLocalStorage<Session>();
+
+export async function inWorkspace<T>(workspace: Workspace, operation: () => T): Promise<Awaited<T>> {
+  const { token } = await accounts.credential(workspace);
+  let session = clients.get(workspace.teamId);
+  if (!session || session.workspace.registration !== workspace.registration) {
+    session = createSession(workspace, token);
+    clients.set(workspace.teamId, session);
   }
-
-  return slackWebClient;
+  return await current.run(session, operation);
 }
 
-export function getCanvasWebClient(): WebClient {
-  if (!canvasWebClient) throw new Error("No slack client initialized");
-  return canvasWebClient;
+function active() {
+  const session = current.getStore();
+  if (!session) throw new Error("Choose a Slack workspace.");
+  return session;
 }
-
-/**
- * Returns the bearer token backing the active Slack client. This is the OAuth
- * access token (set during `onAuthorize`) or the personal access token from
- * preferences. Used to authenticate direct file downloads that go outside the
- * `@slack/web-api` client.
- */
-export function getSlackToken(): string | undefined {
-  return currentToken;
-}
+export const getSlackWebClient = () => active().client;
+export const getCanvasWebClient = () => active().canvas;
+export const getSlackToken = async () => (await accounts.credential(active().workspace)).token;
+export const getWorkspace = () => active().workspace;

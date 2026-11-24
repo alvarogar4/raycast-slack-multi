@@ -1,17 +1,10 @@
-import { getSlackWebClient, SlackConversation } from "../shared/client/WebClient";
+import { workspaceKey } from "../shared/client/workspaces";
+import { getSlackWebClient, getWorkspace } from "../shared/client/WebClient";
 import { withSlackClient } from "../shared/withSlackClient";
 
-function getWorkspaceId(conversation: SlackConversation, fallbackTeamId: string): string {
-  const teamIds = [
-    ...(conversation.context_team_id ? [conversation.context_team_id] : []),
-    ...(conversation.internal_team_ids ?? []),
-    ...(conversation.shared_team_ids ?? []),
-  ];
-
-  return teamIds[0] ?? fallbackTeamId;
-}
-
 type Input = {
+  /** Slack team ID or unique workspace name. Ask the user to choose when ambiguous. */
+  workspace?: string;
   /**
    * A Slack conversation ID or user ID. Conversation IDs start with C, D, or G. User IDs start with U or W and are resolved to a direct-message conversation.
    *
@@ -27,15 +20,11 @@ async function getHuddleLink(input: Input) {
   const conversation = input.conversation.trim().toUpperCase();
   const slackWebClient = getSlackWebClient();
   let channel: string;
-  let dmUserTeamId: string | undefined;
 
   if (CONVERSATION_ID_PATTERN.test(conversation)) {
     channel = conversation;
   } else if (USER_ID_PATTERN.test(conversation)) {
-    const [openResponse, userResponse] = await Promise.all([
-      slackWebClient.conversations.open({ users: conversation }),
-      slackWebClient.users.info({ user: conversation }),
-    ]);
+    const openResponse = await slackWebClient.conversations.open({ users: conversation });
 
     if (openResponse.error) {
       throw new Error(openResponse.error);
@@ -43,20 +32,12 @@ async function getHuddleLink(input: Input) {
     if (!openResponse.channel?.id) {
       throw new Error("Slack did not return a direct message conversation ID");
     }
-    if (userResponse.error) {
-      throw new Error(userResponse.error);
-    }
-
     channel = openResponse.channel.id;
-    dmUserTeamId = userResponse.user?.team_id;
   } else {
     throw new Error("Conversation must be a Slack conversation ID or user ID");
   }
 
-  const [conversationResponse, authResponse] = await Promise.all([
-    slackWebClient.conversations.info({ channel }),
-    slackWebClient.auth.test(),
-  ]);
+  const conversationResponse = await slackWebClient.conversations.info({ channel });
 
   if (conversationResponse.error) {
     throw new Error(conversationResponse.error);
@@ -64,23 +45,7 @@ async function getHuddleLink(input: Input) {
   if (!conversationResponse.channel) {
     throw new Error("Slack did not return conversation info");
   }
-  const channelInfo = conversationResponse.channel as SlackConversation;
-  if (authResponse.error) {
-    throw new Error(authResponse.error);
-  }
-  if (!authResponse.team_id) {
-    throw new Error("Slack did not return a workspace ID");
-  }
-
-  if (!dmUserTeamId && channelInfo.user) {
-    const userResponse = await slackWebClient.users.info({ user: channelInfo.user });
-    if (userResponse.error) {
-      throw new Error(userResponse.error);
-    }
-    dmUserTeamId = userResponse.user?.team_id;
-  }
-
-  const workspaceId = getWorkspaceId(channelInfo, dmUserTeamId ?? authResponse.team_id);
+  const workspaceId = getWorkspace().teamId;
 
   return {
     workspaceId,
@@ -89,4 +54,10 @@ async function getHuddleLink(input: Input) {
   };
 }
 
-export default withSlackClient(getHuddleLink);
+export default async function run(input: Input) {
+  return withSlackClient(input, async (input) => {
+    const output = await getHuddleLink(input);
+    const source = { teamId: getWorkspace().teamId, workspace: workspaceKey(getWorkspace()) };
+    return { ...output, ...source };
+  });
+}

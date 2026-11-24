@@ -1,6 +1,11 @@
 import { getSlackWebClient } from "../shared/client/WebClient";
 import { withSlackClient } from "../shared/withSlackClient";
 
+type Input = {
+  /** Slack team ID or unique workspace name. Ask the user to choose when ambiguous. */
+  workspace?: string;
+};
+
 async function getEmojis() {
   const slackWebClient = getSlackWebClient();
   const emojis = await slackWebClient.emoji.list();
@@ -12,4 +17,6 @@ async function getEmojis() {
   return emojis.emoji;
 }
 
-export default withSlackClient(getEmojis);
+export default async function run(input: Input) {
+  return withSlackClient(input, getEmojis);
+}

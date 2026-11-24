@@ -1,16 +1,25 @@
 import { Action, ActionPanel, Color, Form, Icon, Toast, closeMainWindow, showToast } from "@raycast/api";
-import { useCachedPromise } from "@raycast/utils";
+import { usePromise } from "@raycast/utils";
 import { formatDistance } from "date-fns";
 
 import { SlackClient } from "./shared/client";
-import { withSlackClient } from "./shared/withSlackClient";
+import { WorkspaceTarget, applyToWorkspaces } from "./shared/WorkspaceViews";
+import { inWorkspace } from "./shared/client/WebClient";
+import type { Workspace } from "./shared/client/workspaces";
 import { handleError } from "./shared/utils";
 
-function SetSnooze() {
-  const { data: snoozeStatus, isLoading, mutate } = useCachedPromise(SlackClient.getSnoozeStatus);
+function SetSnooze({ targets }: { targets: Workspace[] }) {
+  const {
+    data: snoozeStatus,
+    isLoading,
+    mutate,
+  } = usePromise((w: Workspace) => inWorkspace(w, SlackClient.getSnoozeStatus), [targets[0]], {
+    execute: targets.length === 1,
+  });
 
   return (
     <Form
+      navigationTitle={targets.length === 1 ? targets[0].teamName : "All Workspaces"}
       isLoading={isLoading}
       actions={
         <ActionPanel>
@@ -20,11 +29,11 @@ function SetSnooze() {
               try {
                 if (snooze.startsWith("activate-for-")) {
                   const minutes = parseInt(snooze.replace("activate-for-", ""));
-                  await SlackClient.setSnooze(minutes);
+                  await applyToWorkspaces(targets, () => SlackClient.setSnooze(minutes));
                   await closeMainWindow();
                   await showToast({ style: Toast.Style.Success, title: "Activated" });
                 } else {
-                  await SlackClient.endSnooze();
+                  await applyToWorkspaces(targets, () => SlackClient.endSnooze());
                   await closeMainWindow();
                   await showToast({ style: Toast.Style.Success, title: "Deactivated" });
                 }
@@ -41,14 +50,16 @@ function SetSnooze() {
       <Form.Description
         title="Current status"
         text={
-          snoozeStatus?.snoozeEnd
-            ? `Activated (for ${formatDistance(new Date(), snoozeStatus.snoozeEnd)})`
-            : "Deactivated"
+          targets.length > 1
+            ? targets.map((w) => w.teamName).join(", ")
+            : snoozeStatus?.snoozeEnd
+              ? `Activated (for ${formatDistance(new Date(), snoozeStatus.snoozeEnd)})`
+              : "Deactivated"
         }
       />
       <Form.Separator />
       <Form.Dropdown id="snooze" title="Set Snooze" defaultValue={snoozeStatus?.snoozeEnd ? "deactivate" : undefined}>
-        {snoozeStatus?.snoozeEnd && (
+        {(targets.length > 1 || snoozeStatus?.snoozeEnd) && (
           <Form.Dropdown.Item
             value="deactivate"
             title="Deactivate"
@@ -63,4 +74,6 @@ function SetSnooze() {
   );
 }
 
-export default withSlackClient(SetSnooze);
+export default function Command() {
+  return <WorkspaceTarget allowAll>{(targets) => <SetSnooze targets={targets} />}</WorkspaceTarget>;
+}

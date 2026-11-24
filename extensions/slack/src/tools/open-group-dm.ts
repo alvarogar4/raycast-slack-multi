@@ -1,7 +1,10 @@
-import { getSlackWebClient } from "../shared/client/WebClient";
+import { workspaceKey } from "../shared/client/workspaces";
+import { getSlackWebClient, getWorkspace } from "../shared/client/WebClient";
 import { withSlackClient } from "../shared/withSlackClient";
 
 type Input = {
+  /** Slack team ID or unique workspace name. Ask the user to choose when ambiguous. */
+  workspace?: string;
   /**
    * Slack user IDs to include in the group DM, one per line. Do not include the authenticated user; Slack adds them automatically. Use Find Users to resolve names to IDs first.
    *
@@ -49,4 +52,10 @@ async function openGroupDm(input: Input) {
   };
 }
 
-export default withSlackClient(openGroupDm);
+export default async function run(input: Input) {
+  return withSlackClient(input, async (input) => {
+    const output = await openGroupDm(input);
+    const source = { teamId: getWorkspace().teamId, workspace: workspaceKey(getWorkspace()) };
+    return { ...output, ...source };
+  });
+}

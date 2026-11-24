@@ -1,8 +1,12 @@
+import { confirmationWorkspace } from "../shared/client/workspaces";
+import { accounts } from "../shared/client/WebClient";
 import { Tool } from "@raycast/api";
 import { getSlackWebClient } from "../shared/client/WebClient";
 import { withSlackClient } from "../shared/withSlackClient";
 
 type Input = {
+  /** Current workspace identifier (team ID and registration). Use the identifier returned by a workspace lookup, or retry using the identifier supplied when choosing a team ID. */
+  workspace?: string;
   /**
    * Slack channel IDs to archive, one per line. Channel IDs start with C or G and can be found with Get Channels.
    *
@@ -34,10 +38,14 @@ function parseChannelIds(channels: string) {
 }
 
 export const confirmation: Tool.Confirmation<Input> = async (input) => {
+  const workspace = confirmationWorkspace(await accounts.list(), input.workspace);
   const ids = parseChannelIds(input.channels);
   return {
     message: `Archive ${ids.length === 1 ? "this channel" : `these ${ids.length} channels`}?`,
-    info: [{ name: "Channels", value: ids.join(", ") }],
+    info: [
+      { name: "Workspace", value: workspace.teamName + " (" + workspace.teamId + ")" },
+      { name: "Channels", value: ids.join(", ") },
+    ],
   };
 };
 
@@ -63,4 +71,6 @@ async function archiveChannels(input: Input) {
   return results;
 }
 
-export default withSlackClient(archiveChannels);
+export default async function run(input: Input) {
+  return withSlackClient(input, archiveChannels, "confirmed");
+}

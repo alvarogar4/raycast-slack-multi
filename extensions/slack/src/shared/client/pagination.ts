@@ -15,6 +15,7 @@ type CollectPaginatedResultsOptions<T, Result> = {
   // Keep scanning at the retention cap and let preferred matches displace fallback matches.
   prioritize?: (item: Result) => boolean;
   stopAfterMatchingPage?: boolean;
+  onPage?: (items: readonly Result[]) => void;
 };
 
 /**
@@ -30,6 +31,7 @@ export async function collectPaginatedResults<T, Result>({
   signal,
   prioritize,
   stopAfterMatchingPage = false,
+  onPage,
 }: CollectPaginatedResultsOptions<T, Result>): Promise<Result[]> {
   const results: Result[] = [];
   let cursor: string | undefined;
@@ -58,6 +60,8 @@ export async function collectPaginatedResults<T, Result>({
       }
     }
 
+    onPage?.(results);
+    if (page.error && onPage) throw page.error;
     cursor = page.nextCursor || undefined;
     if (stopAfterMatchingPage && results.length > resultCountBeforePage) {
       return results;

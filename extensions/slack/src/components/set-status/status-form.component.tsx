@@ -13,6 +13,7 @@ type SlackStatusForm = {
 };
 
 interface StatusFormProps {
+  allowKeep?: boolean;
   emojis: Emoji;
   formInitialValues: SlackStatusForm;
   onSubmit: (form: SlackStatusForm) => void;
@@ -28,16 +29,20 @@ const DURATION_OPTIONS = [
   { value: "custom", title: "Choose" },
 ];
 
-function StatusForm({ emojis, formInitialValues, onSubmit }: StatusFormProps) {
+function StatusForm({ emojis, formInitialValues, onSubmit, allowKeep = false }: StatusFormProps) {
   const { pop } = useNavigation();
   const [showCustomDatePicker, setShowCustomDatePicker] = useState(formInitialValues.duration === "custom");
 
   const { handleSubmit, itemProps, setValidationError } = useForm<SlackStatusForm>({
     initialValues: formInitialValues,
     validation: {
-      statusText: FormValidation.Required,
+      statusText: allowKeep ? undefined : FormValidation.Required,
     },
     onSubmit: (form: SlackStatusForm) => {
+      if (allowKeep && !form.statusText.trim() && form.emoji === "keep" && form.duration === "keep") {
+        setValidationError("statusText", "Enter text, choose an emoji, or change the duration.");
+        return;
+      }
       let finalTimestamp = 0;
 
       if (form.duration === "custom") {
@@ -46,7 +51,7 @@ function StatusForm({ emojis, formInitialValues, onSubmit }: StatusFormProps) {
           return;
         }
         finalTimestamp = Math.floor(form.customUntil.getTime() / 1000);
-      } else {
+      } else if (form.duration !== "keep") {
         finalTimestamp = getExpirationTimestamp(form.duration);
       }
 
@@ -72,12 +77,17 @@ function StatusForm({ emojis, formInitialValues, onSubmit }: StatusFormProps) {
       }
     >
       <Form.Dropdown {...itemProps.emoji} title={"Emoji"}>
+        {allowKeep && <Form.Dropdown.Item title="Keep each workspace’s emoji" value="keep" />}
         {Object.entries(emojis).map(([key, value]) => {
           return <Form.Dropdown.Item key={key} icon={value} title={key} value={key} />;
         })}
       </Form.Dropdown>
 
-      <Form.TextField {...itemProps.statusText} title={"Status Text"} placeholder={"What are you working on?"} />
+      <Form.TextField
+        {...itemProps.statusText}
+        title={"Status Text"}
+        placeholder={allowKeep ? "Leave blank to keep each workspace’s text" : "What are you working on?"}
+      />
 
       <Form.Dropdown
         {...restDurationProps}
@@ -90,6 +100,7 @@ function StatusForm({ emojis, formInitialValues, onSubmit }: StatusFormProps) {
           }
         }}
       >
+        {allowKeep && <Form.Dropdown.Item title="Keep each workspace’s expiration" value="keep" />}
         {DURATION_OPTIONS.map((duration) => (
           <Form.Dropdown.Item key={duration.value} title={duration.title} value={duration.value} />
         ))}

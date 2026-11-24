@@ -1,8 +1,11 @@
-import { getCanvasWebClient } from "../shared/client/WebClient";
+import { workspaceKey } from "../shared/client/workspaces";
+import { getCanvasWebClient, getWorkspace } from "../shared/client/WebClient";
 import { readCanvas, parseCanvasSectionTypes } from "../shared/client/canvas";
 import { withSlackClient } from "../shared/withSlackClient";
 
 type Input = {
+  /** Slack team ID or unique workspace name. Ask the user to choose when ambiguous. */
+  workspace?: string;
   /** Existing canvas URL (https://workspace.slack.com/docs/T…/F…) or F-prefixed canvas ID. */
   canvas: string;
   /** Find sections containing this text. Use specific text to identify an edit target; lookup returns IDs without section bodies. */
@@ -23,4 +26,10 @@ async function tool(input: Input): Promise<{
   return readCanvas(getCanvasWebClient(), { ...input, sectionTypes: parseCanvasSectionTypes(input.sectionTypes) });
 }
 
-export default withSlackClient(tool);
+export default async function run(input: Input) {
+  return withSlackClient(input, async (input) => {
+    const output = await tool(input);
+    const source = { teamId: getWorkspace().teamId, workspace: workspaceKey(getWorkspace()) };
+    return { ...output, ...source };
+  });
+}

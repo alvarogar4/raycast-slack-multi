@@ -1,5 +1,4 @@
 import { Cache } from "@raycast/api";
-import { createHash } from "node:crypto";
 import type { SlackConversation } from "./slackTypes";
 import { planMemberDirectoryRead } from "./memberDirectoryRefresh";
 
@@ -28,6 +27,7 @@ const cache = new Cache({ namespace: "channel-directory", capacity: 20 * 1024 * 
 /** Keeps only the fields channel rows and mention search read, so snapshots stay small and fast to parse. */
 export function slimConversation(conversation: SlackConversation): SlackConversation {
   return {
+    user: conversation.user,
     id: conversation.id,
     name: conversation.name,
     shared_team_ids: conversation.shared_team_ids,
@@ -50,13 +50,6 @@ export function slimConversation(conversation: SlackConversation): SlackConversa
 function createConversationDirectory(name: string) {
   const memory = new Map<string, Snapshot>();
   const loads = new Map<string, Load>();
-
-  function keyFor(token: string | undefined) {
-    return `${name}:${createHash("sha256")
-      .update(token ?? "")
-      .digest("hex")
-      .slice(0, 16)}`;
-  }
 
   function read(key: string): Snapshot | undefined {
     const hit = memory.get(key);
@@ -102,7 +95,6 @@ function createConversationDirectory(name: string) {
         } while (cursor);
         write(key, load.pages);
       } catch (error) {
-        console.error(`[${name}] Scan failed:`, error);
         load.error = error;
         load.failedAt = Date.now();
       } finally {
@@ -131,12 +123,12 @@ function createConversationDirectory(name: string) {
 
   /** Returns page `index` of the directory. A stale snapshot is served while a refresh runs in the background. */
   return async function getPage(
-    token: string | undefined,
+    accountKey: string,
     fetchPage: FetchPage,
     index: number,
     options: ConversationPageOptions = {},
   ): Promise<ConversationPage> {
-    const key = keyFor(token);
+    const key = name + ":" + accountKey;
     const snapshot = read(key);
     const now = Date.now();
     const age = snapshot ? now - snapshot.savedAt : Infinity;

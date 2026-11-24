@@ -2,6 +2,8 @@ import { getSlackWebClient } from "../shared/client/WebClient";
 import { withSlackClient } from "../shared/withSlackClient";
 
 type Input = {
+  /** Slack team ID or unique workspace name. Ask the user to choose when ambiguous. */
+  workspace?: string;
   /**
    * The Slack channel ID containing the message. Use a Slack permalink, Get Channels, Read Conversation, Get Channel History, or Search Messages to find it.
    *
@@ -60,4 +62,6 @@ async function addReaction(input: Input) {
   };
 }
 
-export default withSlackClient(addReaction);
+export default async function run(input: Input) {
+  return withSlackClient(input, addReaction);
+}

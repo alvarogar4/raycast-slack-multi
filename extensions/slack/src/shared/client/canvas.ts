@@ -3,11 +3,16 @@ import { WebClient, type WebAPICallResult, type WebClientOptions } from "@slack/
 
 type CanvasClient = Pick<WebClient, "apiCall">;
 
-export function createCanvasClient(token: string, agent?: WebClientOptions["agent"]): WebClient {
+export function createCanvasClient(
+  token: string,
+  agent?: WebClientOptions["agent"],
+  requestInterceptor?: WebClientOptions["requestInterceptor"],
+): WebClient {
   // An insert may have succeeded even if its response was lost. Never resend it
   // automatically, and surface rate limits before Raycast's tool deadline.
   return new WebClient(token, {
     ...(agent && { agent }),
+    requestInterceptor,
     retryConfig: { retries: 0 },
     rejectRateLimitedCalls: true,
     timeout: 10_000,

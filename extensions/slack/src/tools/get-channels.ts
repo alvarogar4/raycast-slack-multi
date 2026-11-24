@@ -1,4 +1,5 @@
-import { getSlackWebClient } from "../shared/client/WebClient";
+import { workspaceKey } from "../shared/client/workspaces";
+import { getSlackWebClient, getWorkspace } from "../shared/client/WebClient";
 import { withSlackClient } from "../shared/withSlackClient";
 
 type ResponseGetChannels = {
@@ -6,6 +7,11 @@ type ResponseGetChannels = {
   name?: string;
   purpose?: string;
   topic?: string;
+};
+
+type Input = {
+  /** Slack team ID or unique workspace name. Ask the user to choose when ambiguous. */
+  workspace?: string;
 };
 
 async function getChannels() {
@@ -17,7 +23,8 @@ async function getChannels() {
     const response = await slackWebClient.conversations.list({
       exclude_archived: true,
       types: "public_channel,private_channel",
-      limit: 1000,
+      team_id: getWorkspace().teamId,
+      limit: 200,
       cursor: cursor,
     });
 
@@ -37,7 +44,9 @@ async function getChannels() {
     cursor = response.response_metadata?.next_cursor;
   } while (cursor);
 
-  return allChannels;
+  return allChannels.map((row) => ({ ...row, teamId: getWorkspace().teamId, workspace: workspaceKey(getWorkspace()) }));
 }
 
-export default withSlackClient(getChannels);
+export default async function run(input: Input) {
+  return withSlackClient(input, getChannels);
+}

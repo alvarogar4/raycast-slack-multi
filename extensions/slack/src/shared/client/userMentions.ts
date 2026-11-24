@@ -21,7 +21,11 @@ export function toUserMentions(users: readonly MentionUser[]) {
 
 type GetUser = (id: string) => Promise<{ ok?: boolean; error?: string; user?: SlackMember }>;
 
-export async function readUserMention(uri: string, getUser: GetUser) {
+export async function readUserMention(
+  uri: string,
+  getUser: GetUser,
+  source?: { teamId: string; registration: string },
+) {
   const match = /^slack:\/\/users\/(T[A-Z0-9]{8,})\/([UW][A-Z0-9]{8,})$/.exec(uri);
   if (!match) throw new Error("Invalid Slack user URI.");
   const [, teamId, userId] = match;
@@ -39,7 +43,8 @@ export async function readUserMention(uri: string, getUser: GetUser) {
     text: JSON.stringify(
       {
         id: user.id,
-        teamId: user.team_id,
+        teamId: source?.teamId ?? teamId,
+        ...(source && { workspace: source.teamId + ":" + source.registration }),
         username: user.name,
         displayName: name[1],
         realName: user.profile?.real_name ?? user.real_name,
@@ -49,7 +54,7 @@ export async function readUserMention(uri: string, getUser: GetUser) {
         statusEmoji: user.profile?.status_emoji,
         timezone: user.tz,
         mention: `<@${user.id}>`,
-        url: `slack://user?team=${teamId}&id=${userId}`,
+        url: `slack://user?team=${source?.teamId ?? teamId}&id=${userId}`,
       },
       null,
       2,

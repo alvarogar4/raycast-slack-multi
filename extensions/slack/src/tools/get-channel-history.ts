@@ -1,8 +1,11 @@
-import { getSlackWebClient } from "../shared/client/WebClient";
+import { workspaceKey } from "../shared/client/workspaces";
+import { getSlackWebClient, getWorkspace } from "../shared/client/WebClient";
 import { withSlackClient } from "../shared/withSlackClient";
 import { formatSlackFiles, getMessageText, isValidChannelId } from "../shared/utils";
 
 type Input = {
+  /** Slack team ID or unique workspace name. Ask the user to choose when ambiguous. */
+  workspace?: string;
   /**
    * The id of the channel to fetch history (eg. messages) for. Use `getChannels` to get the list of channels with their ids.
    */
@@ -100,4 +103,10 @@ async function getChannelHistory(input: Input) {
   }));
 }
 
-export default withSlackClient(getChannelHistory);
+export default async function run(input: Input) {
+  return withSlackClient(input, async (input) => {
+    const output = await getChannelHistory(input);
+    const source = { teamId: getWorkspace().teamId, workspace: workspaceKey(getWorkspace()) };
+    return output?.map((row) => ({ ...row, ...source }));
+  });
+}

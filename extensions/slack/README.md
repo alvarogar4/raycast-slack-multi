@@ -1,14 +1,25 @@
-# Slack
+# Slack for Raycast
 
-This Raycast extension is the perfect companion for Slack users. It allows you to:
+Open a channel, search messages, choose a recipient, or read followed conversations across your Slack workspaces. Each row shows its workspace. The workspace dropdown starts on **All Workspaces** and remembers your choice for each command.
 
-- Quickly open Slack channels
-- Search for messages
-- Mention workspace members and channels in AI Chat
-- See unread messages,
-- Snooze notifications
-- Set your presence status
-- Set your status
+## Install locally
+
+This fork keeps the original extension directory and commit history so you can merge future Raycast changes. It uses the original **Slack** command identity and **@slack** alias. Uninstall the Store version before importing this fork. Original extension by **mommertf** and the upstream contributors. [Upstream source](https://github.com/raycast/extensions/tree/main/extensions/slack) · [MIT license](../../LICENSE)
+
+```sh
+git clone --filter=blob:none --sparse https://github.com/alvarogar4/raycast-slack-multi.git
+cd raycast-slack-multi
+git sparse-checkout set extensions/slack
+cd extensions/slack
+npm ci
+npm run dev
+```
+
+Open **Manage Workspaces** in Raycast, choose **Add Workspace**, and paste a Slack user token. The extension checks it with Slack and saves it in Raycast’s encrypted LocalStorage. Repeat for each workspace. Use **Rename Workspace** to choose the label shown in results. To replace a token or switch the user for an existing workspace, remove that entry and add it again. [Raycast storage](https://developers.raycast.com/api-reference/storage)
+
+**Open Channel** lists available public channels, private channels you belong to, group conversations, and DMs, excluding archived conversations. Public channels you can browse before joining carry a **Not joined** label. **Join Channel** explicitly joins one. **Send Message** lets you pick a recipient from any connected workspace, then shows the recipient and workspace in the composer. [Slack conversation listing](https://docs.slack.dev/reference/methods/conversations.list/)
+
+In **Unread Messages**, use **Configure** on each workspace to select up to 30 conversations to follow. **Set Status**, **Set Presence**, and **Set Snooze** let you choose one workspace or apply the change to all. AI tools accept a workspace ID or unique workspace name. Include it when sending a message, replying to a thread, or uploading a file.
 
 ## Opening channels and direct messages
 
@@ -20,11 +31,11 @@ In the **Search Emojis** command preferences, set **Emoji Sort Order** to **Most
 
 ## Missing Slack permissions
 
-If Slack returns `missing_scope`, the error toast lists the required permissions when Slack supplies them. For OAuth sign-in, use **Re-authorize Slack** and reopen the command. For a personal access token, add the required **User Token Scopes** to your Slack app, reinstall the app to your workspace, and update the token in the extension preferences. Re-authorizing OAuth does not change a personal token.
+If Slack reports missing permissions, add the listed user scopes to the Slack app in that workspace, reinstall the app, then replace its token in **Manage Workspaces**.
 
 ## Set your status from a deep link
 
-The **Set Status** command accepts two optional arguments, `statusText` and `emoji`, so you can build a deep link (or a [Quicklink](https://manual.raycast.com/quicklinks)) that sets your status in one step:
+The **Set Status** command accepts optional arguments, `statusText` and `emoji`, so you can build a deep link (or a [Quicklink](https://manual.raycast.com/quicklinks)) that sets your status in one step:
 
 ```
 raycast://extensions/mommertf/slack/set-status?arguments=%7B%22statusText%22%3A%22Lunch%22%2C%22emoji%22%3A%22%3Ahamburger%3A%22%7D
@@ -39,13 +50,13 @@ The `arguments` query parameter is a URL-encoded JSON object, for example:
 - Either argument may be omitted; only the one you provide is changed.
 - `emoji` accepts a Slack emoji name with or without colons (`hamburger` or `:hamburger:`).
 
-Statuses set this way don't auto-expire. To pick an expiration, open the command and use the **Set New Status** form.
+Statuses set without an expiration stay until cleared. To pick an expiration, open the command and use the **Set New Status** form.
 
-## How to get an access token?
+## Create a Slack app for each workspace
 
-If you don't want to log in through OAuth, you can use an access token instead. Here's how to get one:
+Repeat these steps in each workspace. If your workspace requires app approval, ask its administrator to approve the installation.
 
-1. Open https://api.slack.com/apps/
+1. Open [Your Apps](https://api.slack.com/apps/).
 2. Click Button `Create New App`
 3. Select `From an app manifest`
 4. Select a workspace to which you want to grant the extension access.
@@ -127,7 +138,7 @@ If you don't want to log in through OAuth, you can use an access token instead. 
 6. Confirm creation of app
 7. Press `Install to Workspace`
 8. Get your personal access token from `Features -> OAuth & Permissions` (section `OAuth Tokens for Your Workspace`).
-   Your personal access token will start with `xoxp-`.
+   Choose the **User OAuth Token** beginning with `xoxp-`. Paste it into **Manage Workspaces → Add Workspace**.
 
 ## Proxy Support
 
@@ -140,11 +151,6 @@ The proxy URL is resolved in the following order:
 1. **Raycast preference** — set the "Proxy URL" field in the extension settings (e.g. `http://proxy.example.com:8080`)
 2. **`HTTPS_PROXY` environment variable**
 3. **`HTTP_PROXY` environment variable**
-
-### Important Notes
-
-- Proxy support applies to **Slack API calls only**. The OAuth login flow uses Raycast's built-in networking, which does not go through the configured proxy.
-- If you are on a corporate network that blocks OAuth, use a **personal access token** instead (see above). Token-based authentication bypasses OAuth entirely and all subsequent API calls will use the proxy.
 
 ## Slack API rate limits
 

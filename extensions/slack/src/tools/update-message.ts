@@ -3,6 +3,8 @@ import { withSlackClient } from "../shared/withSlackClient";
 import { getAiMessageBlocks } from "./message-signature";
 
 type Input = {
+  /** Slack team ID or unique workspace name. Ask the user to choose when ambiguous. */
+  workspace?: string;
   /**
    * The Slack channel ID containing the message. Use a Slack permalink, Get Channels, Read Conversation, Get Channel History, or Search Messages to find it.
    *
@@ -60,4 +62,6 @@ async function updateMessage(input: Input) {
   };
 }
 
-export default withSlackClient(updateMessage);
+export default async function run(input: Input) {
+  return withSlackClient(input, updateMessage, true);
+}

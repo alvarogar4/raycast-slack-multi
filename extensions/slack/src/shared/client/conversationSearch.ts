@@ -9,6 +9,8 @@ type ConversationSearchOptions = {
   types?: "channels" | "groups" | "all";
   query: string;
   maxResultsPerType: number;
+  scanAllPages?: boolean;
+  onPage?: (channels: Channel[], groups: Group[]) => void;
   userNames?: ReadonlyMap<string, string>;
   loadUserNames?: () => Promise<ReadonlyMap<string, string>>;
   loadConversationsPage: (cursor?: string) => Promise<CursorPage<SlackConversation>>;
@@ -50,6 +52,8 @@ export async function searchConversationDirectory({
   query,
   types = "all",
   maxResultsPerType,
+  scanAllPages = query.trim().length > 0,
+  onPage,
   userNames = new Map(),
   loadUserNames,
   loadConversationsPage,
@@ -98,10 +102,15 @@ export async function searchConversationDirectory({
       return true;
     },
     maxResults: types === "all" ? maxResultsPerType * 2 : maxResultsPerType,
-    scanAllPages: query.trim().length > 0,
+    onPage: onPage ? (rows) => onPage(...splitResults(rows)) : undefined,
+    scanAllPages,
     signal,
   });
 
+  return splitResults(results);
+}
+
+function splitResults(results: readonly ConversationSearchResult[]): [Channel[], Group[]] {
   const channels: Channel[] = [];
   const groups: Group[] = [];
   for (const result of results) {

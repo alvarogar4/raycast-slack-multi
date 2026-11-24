@@ -1,5 +1,4 @@
 import { Cache } from "@raycast/api";
-import { createHash } from "node:crypto";
 import type { SlackMember } from "./slackTypes";
 import { toUserName } from "./member";
 import { planMemberDirectoryRead } from "./memberDirectoryRefresh";
@@ -33,13 +32,6 @@ export function slimMember(member: SlackMember): SlackMember | undefined {
       status_expiration: profile.status_expiration,
     },
   };
-}
-
-function keyFor(token: string | undefined) {
-  return `member-directory:${createHash("sha256")
-    .update(token ?? "")
-    .digest("hex")
-    .slice(0, 16)}`;
 }
 
 function read(key: string): Snapshot | undefined {
@@ -135,12 +127,8 @@ export type MemberPage = { items: SlackMember[]; hasMore: boolean; error?: unkno
  * snapshot keeps working and another scan waits out a short backoff instead of restarting on every search.
  * Only a complete scan is cached.
  */
-export async function getMemberPage(
-  token: string | undefined,
-  fetchPage: FetchPage,
-  index: number,
-): Promise<MemberPage> {
-  const key = keyFor(token);
+export async function getMemberPage(accountKey: string, fetchPage: FetchPage, index: number): Promise<MemberPage> {
+  const key = "member-directory:" + accountKey;
   const snapshot = read(key);
   const now = Date.now();
   const age = snapshot ? now - snapshot.savedAt : Infinity;

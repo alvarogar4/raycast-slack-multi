@@ -4,17 +4,23 @@ import { useCallback, useMemo, useState } from "react";
 import { SlackClient } from "../../shared/client";
 import { SLACK_EMOJI_CODE_MAP } from "../../constants/emoji.constants";
 
+import { inWorkspace } from "../../shared/client/WebClient";
+import type { Workspace } from "../../shared/client/workspaces";
 interface EmojiPickerProps {
+  workspace?: Workspace;
   onSelect: (emoji: { name: string; value: string }) => void;
 }
 
 const DISPLAY_LIMIT = 1000;
 
-function EmojiPicker({ onSelect }: EmojiPickerProps) {
+function EmojiPicker({ onSelect, workspace }: EmojiPickerProps) {
   const { pop } = useNavigation();
   const [searchText, setSearchText] = useState("");
   const [displayLimit, setDisplayLimit] = useState(DISPLAY_LIMIT);
-  const { data: workspaceEmojis, isLoading } = useCachedPromise(SlackClient.getWorkspaceEmojis);
+  const { data: workspaceEmojis, isLoading } = useCachedPromise(
+    (w?: Workspace) => (w ? inWorkspace(w, SlackClient.getWorkspaceEmojis) : Promise.resolve({})),
+    [workspace],
+  );
 
   const emojiEntries = useMemo(() => {
     const emojis = { ...workspaceEmojis, ...SLACK_EMOJI_CODE_MAP };

@@ -1,13 +1,14 @@
 import { Icon, Image } from "@raycast/api";
 import { handleError } from "../utils";
-import { getSlackToken, getSlackWebClient } from "./WebClient";
+import { getWorkspace, getSlackWebClient } from "./WebClient";
+import { workspaceKey } from "./workspaces";
 import type { SlackMember } from "./slackTypes";
 import { formatRelative } from "date-fns";
 import { Profile } from "@slack/web-api/dist/types/response/UsersProfileGetResponse";
 import { collectPaginatedResults } from "./pagination";
 import { getDirectorySearchPageSize } from "./directory";
 import { searchConversationDirectory, searchUserNames } from "./conversationSearch";
-import { toChannel, toGroup } from "./conversation";
+import { directoryConversation, toChannel, toGroup } from "./conversation";
 import type { Channel, Group } from "./conversation";
 import { isMemberDirectoryScanError, searchMemberDirectory } from "./memberSearch";
 import { toUserName } from "./member";
@@ -102,9 +103,13 @@ const createMemberPageLoader = () => async (cursor?: string) => {
   const slackWebClient = getSlackWebClient();
   const index = Number(cursor ?? 0);
   const page = await getMemberPage(
-    getSlackToken(),
+    workspaceKey(getWorkspace()),
     async (nextCursor) => {
-      const response = await slackWebClient.users.list({ limit: getDirectorySearchPageSize(), cursor: nextCursor });
+      const response = await slackWebClient.users.list({
+        team_id: getWorkspace().teamId,
+        limit: getDirectorySearchPageSize(),
+        cursor: nextCursor,
+      });
       return { items: response.members ?? [], nextCursor: response.response_metadata?.next_cursor };
     },
     index,
@@ -133,15 +138,19 @@ export async function loadConversationDirectoryPage(cursor?: string, options?: C
   const slackWebClient = getSlackWebClient();
   const index = Number(cursor ?? 0);
   const page = await getConversationPage(
-    getSlackToken(),
+    workspaceKey(getWorkspace()),
     async (nextCursor) => {
       const response = await slackWebClient.conversations.list({
+        team_id: getWorkspace().teamId,
         exclude_archived: true,
-        types: "public_channel,private_channel,mpim",
+        types: "public_channel,private_channel,mpim,im",
         limit: getDirectorySearchPageSize(),
         cursor: nextCursor,
       });
-      return { items: response.channels ?? [], nextCursor: response.response_metadata?.next_cursor };
+      return {
+        items: (response.channels ?? []).map((c) => directoryConversation(c, getWorkspace().teamId)),
+        nextCursor: response.response_metadata?.next_cursor,
+      };
     },
     index,
     options,
@@ -154,15 +163,19 @@ export async function loadMemberChannelDirectoryPage(cursor?: string) {
   const slackWebClient = getSlackWebClient();
   const index = Number(cursor ?? 0);
   const page = await getMemberChannelPage(
-    getSlackToken(),
+    workspaceKey(getWorkspace()),
     async (nextCursor) => {
       const response = await slackWebClient.users.conversations({
+        team_id: getWorkspace().teamId,
         exclude_archived: true,
         types: "public_channel,private_channel",
         limit: getDirectorySearchPageSize(),
         cursor: nextCursor,
       });
-      return { items: response.channels ?? [], nextCursor: response.response_metadata?.next_cursor };
+      return {
+        items: (response.channels ?? []).map((c) => directoryConversation(c, getWorkspace().teamId)),
+        nextCursor: response.response_metadata?.next_cursor,
+      };
     },
     index,
   );
@@ -174,7 +187,7 @@ export class SlackClient {
     const slackWebClient = getSlackWebClient();
     const users = await collectPaginatedResults({
       loadPage: async (cursor) => {
-        const response = await slackWebClient.users.list({ limit: pageSize, cursor });
+        const response = await slackWebClient.users.list({ team_id: getWorkspace().teamId, limit: pageSize, cursor });
         return { items: response.members ?? [], nextCursor: response.response_metadata?.next_cursor };
       },
       transform: toUser,
@@ -187,6 +200,7 @@ export class SlackClient {
     let cursor: string | undefined;
     do {
       const response = await slackWebClient.conversations.list({
+        team_id: getWorkspace().teamId,
         exclude_archived: true,
         types: "im",
         limit: pageSize,
@@ -207,12 +221,16 @@ export class SlackClient {
     const channels = await collectPaginatedResults({
       loadPage: async (cursor) => {
         const response = await slackWebClient.conversations.list({
+          team_id: getWorkspace().teamId,
           exclude_archived: true,
           types: "public_channel,private_channel",
           limit: pageSize,
           cursor,
         });
-        return { items: response.channels ?? [], nextCursor: response.response_metadata?.next_cursor };
+        return {
+          items: (response.channels ?? []).map((c) => directoryConversation(c, getWorkspace().teamId)),
+          nextCursor: response.response_metadata?.next_cursor,
+        };
       },
       transform: toChannel,
       matches: () => true,
@@ -229,12 +247,16 @@ export class SlackClient {
     const groups = await collectPaginatedResults({
       loadPage: async (cursor) => {
         const response = await slackWebClient.conversations.list({
+          team_id: getWorkspace().teamId,
           exclude_archived: true,
           types: "mpim",
           limit: pageSize,
           cursor,
         });
-        return { items: response.channels ?? [], nextCursor: response.response_metadata?.next_cursor };
+        return {
+          items: (response.channels ?? []).map((c) => directoryConversation(c, getWorkspace().teamId)),
+          nextCursor: response.response_metadata?.next_cursor,
+        };
       },
       transform: (conversation) => toGroup(conversation, userNames),
       matches: () => true,
@@ -279,10 +301,13 @@ export class SlackClient {
     signal?: AbortSignal,
     loadUserNames?: () => Promise<ReadonlyMap<string, string>>,
     types: "channels" | "groups" | "all" = "all",
+    onPage?: (channels: Channel[], groups: Group[]) => void,
   ): Promise<[Channel[], Group[]]> {
     const [channels, groups] = await searchConversationDirectory({
       query,
-      maxResultsPerType: maxSearchResultsPerType,
+      maxResultsPerType: Infinity,
+      onPage,
+      scanAllPages: true,
       types,
       loadUserNames:
         loadUserNames ??
@@ -348,36 +373,30 @@ export class SlackClient {
     await slackWebClient.dnd.endSnooze({});
   }
 
-  public static async getUnreadConversations(conversationIds: string[]): Promise<UnreadChannelInfo[]> {
+  public static async getUnreadConversations(conversationIds: string[]) {
     const slackWebClient = getSlackWebClient();
 
     if (conversationIds.length > 30) {
       throw new Error("Too many conversations");
     }
 
-    if (conversationIds.length === 0) {
-      return [];
-    }
-
-    const conversationInfos = await Promise.all(
-      conversationIds.map((id) => slackWebClient.conversations.info({ channel: id })),
+    const histories = await Promise.allSettled(
+      conversationIds.map(async (id) => {
+        const info = await slackWebClient.conversations.info({ channel: id });
+        if (!info.channel) throw new Error("Conversation is unavailable");
+        return slackWebClient.conversations.history({
+          channel: id,
+          oldest: parseFloat(info.channel.last_read || "0") ? info.channel.last_read : undefined,
+        });
+      }),
     );
-
-    const conversationHistories = await Promise.all(
-      conversationInfos.map((conversationInfo) =>
-        slackWebClient.conversations.history({
-          channel: conversationInfo.channel!.id!,
-          oldest:
-            parseFloat(conversationInfo.channel!.last_read || "0") !== 0
-              ? conversationInfo.channel!.last_read
-              : undefined,
-        }),
-      ),
-    );
-
-    const unreadConversations = conversationHistories
-      .map(({ messages }, index) => ({
-        conversationId: conversationInfos[index].channel!.id!,
+    const failed = conversationIds.filter((_, i) => histories[i].status === "rejected");
+    const unreadConversations = histories
+      .flatMap((r, i) =>
+        r.status === "fulfilled" ? [{ conversationId: conversationIds[i], messages: r.value.messages }] : [],
+      )
+      .map(({ messages, conversationId }) => ({
+        conversationId,
         messageHistory: messages
           ?.map((message) => ({
             receivedAt: message.ts ? new Date(parseFloat(message.ts) * 1000) : undefined,
@@ -395,7 +414,7 @@ export class SlackClient {
           new Date(b.messageHistory[0].receivedAt).getTime() - new Date(a.messageHistory[0].receivedAt).getTime(),
       );
 
-    return unreadConversations;
+    return { conversations: unreadConversations, failed };
   }
 
   public static async markAsRead(conversationId: string): Promise<void> {

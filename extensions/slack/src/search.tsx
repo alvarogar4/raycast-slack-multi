@@ -8,16 +8,22 @@ import {
   Clipboard,
   Detail,
   useNavigation,
+  showToast,
+  Toast,
   showHUD,
   getPreferenceValues,
 } from "@raycast/api";
+
+import { User, useDirectorySearch, type Channel, type Group } from "./shared/client";
 import { useState } from "react";
-import { User, useDirectorySearch, useMe, type Channel, type Group } from "./shared/client";
-import { withSlackClient } from "./shared/withSlackClient";
+import { WorkspaceList } from "./shared/WorkspaceViews";
+import { inWorkspace, getSlackWebClient } from "./shared/client/WebClient";
+import { type Workspace, workspaceKey } from "./shared/client/workspaces";
+import { handleError } from "./shared/utils";
 import { useCachedState, useFrecencySorting } from "@raycast/utils";
-import { OpenChannelInSlack, OpenChatInSlack, RetrySlackConnection, useSlackApp } from "./shared/OpenInSlack";
+import { OpenChannelInSlack, OpenChatInSlack, useSlackApp } from "./shared/OpenInSlack";
 import { getStatusEmoji, getTimezoneMetadata } from "./shared/client/presentation";
-import SendMessage from "./send-message";
+import { SendMessage } from "./shared/SendMessage";
 import { directMessageAction } from "./shared/directMessageAction";
 import {
   isSlackUserId,
@@ -71,21 +77,36 @@ function CopyIdAction({ id }: { id: string }) {
   );
 }
 
-function Search() {
+export function DirectoryRows({
+  workspace,
+  searchText,
+  compose = false,
+}: {
+  workspace: Workspace;
+  searchText: string;
+  compose?: boolean;
+}) {
   const { push } = useNavigation();
-  const [searchText, setSearchText] = useState("");
-  const { data: me, isLoading: isLoadingMe, error: workspaceError, revalidate: retryWorkspace } = useMe();
-  const workspaceId = me?.teamId;
+  const workspaceId = workspace.teamId;
+  const [joined, setJoined] = useState<ReadonlySet<string>>(new Set());
   const [recentItems, setRecentItems] = useCachedState<OpenChannelItem[]>(
-    visitedDirectoryItemsCacheKey(me?.teamId),
+    visitedDirectoryItemsCacheKey(workspaceKey(workspace)),
     [],
   );
-  const { isAppInstalled, isLoading } = useSlackApp();
-  const { data, isLoading: isLoadingChannels } = useDirectorySearch(searchText);
+  const { isAppInstalled } = useSlackApp();
+  const { data, isLoading: loading, error, retry } = useDirectorySearch(workspace, searchText);
 
+  const people = new Map(data?.[0].map((person) => [person.id, person]));
+  const items = data?.flat().map((item) => {
+    if ("directUserId" in item && item.directUserId) {
+      const person = people.get(item.directUserId);
+      return { ...item, name: person?.name ?? item.name, icon: person?.icon ?? Icon.Person };
+    }
+    return item;
+  });
   const channels = mergeVisitedDirectoryItems(
-    data?.flat(),
-    visitedDirectoryItemsForWorkspace(recentItems, me?.teamId),
+    items,
+    visitedDirectoryItemsForWorkspace(recentItems, workspaceKey(workspace)),
     searchText,
   );
 
@@ -95,33 +116,46 @@ function Search() {
     resetRanking,
   } = useFrecencySorting(channels, {
     key: (item) => item.id,
-    namespace: me?.teamId,
+    namespace: workspaceKey(workspace),
   });
 
   const rememberVisit = (item: OpenChannelItem) => {
-    if (me?.teamId) {
-      setRecentItems((items) => rememberVisitedDirectoryItem(items, item));
-    }
+    setRecentItems((items) => rememberVisitedDirectoryItem(items, item));
     return visitItem(item);
   };
 
   return (
-    <List
-      isLoading={isLoading || isLoadingChannels || isLoadingMe}
-      actions={
-        workspaceError || !workspaceId ? (
-          <ActionPanel>
-            <RetrySlackConnection retry={retryWorkspace} />
-          </ActionPanel>
-        ) : undefined
-      }
-      filtering={false}
-      throttle
-      onSearchTextChange={setSearchText}
-    >
+    <List.Section title={workspace.teamName} subtitle={loading ? "Loading…" : undefined}>
+      {error && (
+        <List.Item
+          title="Could not load the full directory"
+          accessories={[{ tag: workspace.teamName }]}
+          actions={
+            <ActionPanel>
+              <Action title="Retry" onAction={retry} />
+            </ActionPanel>
+          }
+        />
+      )}
       {recents.map((item) => {
         const isUser = isSlackUserId(item.id);
+        const notJoined = "notJoined" in item && item.notJoined && !joined.has(item.id);
 
+        const composer = <SendMessage workspace={workspace} recipient={item.id} recipientName={item.name} />;
+        if (compose)
+          return (
+            <List.Item
+              key={item.id}
+              title={item.name}
+              icon={item.icon}
+              accessories={[{ tag: workspace.teamName }, ...(notJoined ? [{ tag: "Not joined" }] : [])]}
+              actions={
+                <ActionPanel>
+                  <Action.Push title="Compose Message" target={composer} />
+                </ActionPanel>
+              }
+            />
+          );
         if (isUser) {
           const {
             id: userId,
@@ -140,21 +174,21 @@ function Search() {
               title={name}
               subtitle={displayExtraMetadata ? title : undefined}
               icon={icon}
-              accessories={searchItemAccessories(statusEmoji, statusText, statusExpiration, timezone)}
+              accessories={[
+                { tag: workspace.teamName },
+                ...searchItemAccessories(statusEmoji, statusText, statusExpiration, timezone),
+              ]}
               actions={
                 <ActionPanel>
-                  {workspaceId ? (
-                    <OpenChatInSlack
-                      {...{ workspaceId, userId, isAppInstalled, conversationId, onAction: () => rememberVisit(item) }}
-                    />
-                  ) : (
-                    <RetrySlackConnection retry={retryWorkspace} />
-                  )}
+                  <OpenChatInSlack
+                    workspace={workspace}
+                    {...{ workspaceId, userId, isAppInstalled, conversationId, onAction: () => rememberVisit(item) }}
+                  />
 
                   <Action.Push
                     title="Send Message"
                     icon={Icon.Message}
-                    target={<SendMessage recipient={userId} recipientName={name} />}
+                    target={composer}
                     shortcut={{ modifiers: ["cmd", "shift"], key: "s" }}
                   />
 
@@ -173,7 +207,7 @@ function Search() {
                         icon={Icon.Link}
                         shortcut={{ modifiers: ["cmd", "shift"], key: "l" }}
                         onAction={() =>
-                          directMessageAction(userId, conversationId, async (id) => {
+                          directMessageAction(workspace, userId, conversationId, async (id) => {
                             const link = `https://app.slack.com/client/${workspaceId}/${id}`;
                             push(
                               <Detail
@@ -195,7 +229,7 @@ function Search() {
                       title="Copy Huddle Link"
                       icon={Icon.Clipboard}
                       onAction={() =>
-                        directMessageAction(userId, conversationId, async (id) => {
+                        directMessageAction(workspace, userId, conversationId, async (id) => {
                           await Clipboard.copy(`https://app.slack.com/huddle/${workspaceId}/${id}`);
                           await showHUD("Copied Huddle link");
                         })
@@ -207,7 +241,6 @@ function Search() {
                   <CopyIdAction id={userId} />
 
                   <ActionPanel.Section>
-                    {workspaceError && workspaceId ? <RetrySlackConnection retry={retryWorkspace} /> : null}
                     <Action
                       icon={Icon.ArrowCounterClockwise}
                       title="Reset Ranking"
@@ -224,17 +257,14 @@ function Search() {
           return (
             <List.Item
               key={channelId}
+              accessories={[{ tag: workspace.teamName }, ...(notJoined ? [{ tag: "Not joined" }] : [])]}
               title={name}
               icon={icon}
               actions={
                 <ActionPanel>
-                  {workspaceId ? (
-                    <OpenChannelInSlack
-                      {...{ workspaceId, channelId, isAppInstalled, onAction: () => rememberVisit(item) }}
-                    />
-                  ) : (
-                    <RetrySlackConnection retry={retryWorkspace} />
-                  )}
+                  <OpenChannelInSlack
+                    {...{ workspaceId, channelId, isAppInstalled, onAction: () => rememberVisit(item) }}
+                  />
 
                   {workspaceId && (
                     <Action.CreateQuicklink
@@ -250,10 +280,27 @@ function Search() {
                     />
                   )}
 
+                  {notJoined && (
+                    <Action
+                      title="Join Channel"
+                      icon={Icon.Plus}
+                      onAction={async () => {
+                        try {
+                          await inWorkspace(workspace, () =>
+                            getSlackWebClient().conversations.join({ channel: channelId }),
+                          );
+                          setJoined((previous) => new Set([...previous, channelId]));
+                          await showToast(Toast.Style.Success, "Joined #" + name);
+                        } catch (error) {
+                          await handleError(error, "Could not join channel");
+                        }
+                      }}
+                    />
+                  )}
+                  <Action.Push title="Send Message" target={composer} />
                   <CopyIdAction id={channelId} />
 
                   <ActionPanel.Section>
-                    {workspaceError && workspaceId ? <RetrySlackConnection retry={retryWorkspace} /> : null}
                     <Action
                       icon={Icon.ArrowCounterClockwise}
                       title="Reset Ranking"
@@ -266,8 +313,14 @@ function Search() {
           );
         }
       })}
-    </List>
+    </List.Section>
   );
 }
 
-export default withSlackClient(Search);
+export default function Search() {
+  return (
+    <WorkspaceList placeholder="Find a channel or person">
+      {(workspace, searchText) => <DirectoryRows workspace={workspace} searchText={searchText} />}
+    </WorkspaceList>
+  );
+}

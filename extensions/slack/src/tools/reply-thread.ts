@@ -3,6 +3,8 @@ import { withSlackClient } from "../shared/withSlackClient";
 import { getAiMessageBlocks } from "./message-signature";
 
 type Input = {
+  /** Slack team ID or unique workspace name. Ask the user to choose when ambiguous. */
+  workspace?: string;
   /**
    * The Slack channel ID that contains the thread. Use Get Channels, Get Channel History, or Search Messages to find it.
    *
@@ -60,4 +62,6 @@ async function replyThread(input: Input) {
   };
 }
 
-export default withSlackClient(replyThread);
+export default async function run(input: Input) {
+  return withSlackClient(input, replyThread, true);
+}

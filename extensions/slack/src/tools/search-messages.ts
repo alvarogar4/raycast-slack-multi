@@ -1,7 +1,10 @@
-import { getSlackWebClient } from "../shared/client/WebClient";
+import { workspaceKey } from "../shared/client/workspaces";
+import { getSlackWebClient, getWorkspace } from "../shared/client/WebClient";
 import { withSlackClient } from "../shared/withSlackClient";
 
 type Input = {
+  /** Slack team ID or unique workspace name. Ask the user to choose when ambiguous. */
+  workspace?: string;
   query: string;
   sort?: "timestamp" | "score";
 };
@@ -30,7 +33,7 @@ async function searchMessages(input: Input) {
       sort: input.sort ?? "score",
       count: 100,
       query: input.query,
-      page: page++,
+      page,
     });
 
     if (response.error) {
@@ -75,7 +78,9 @@ async function searchMessages(input: Input) {
     page++;
   } while (hasMorePages);
 
-  return allMessages;
+  return allMessages.map((row) => ({ ...row, teamId: getWorkspace().teamId, workspace: workspaceKey(getWorkspace()) }));
 }
 
-export default withSlackClient(searchMessages);
+export default async function run(input: Input) {
+  return withSlackClient(input, searchMessages);
+}

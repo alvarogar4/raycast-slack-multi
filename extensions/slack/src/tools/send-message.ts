@@ -3,6 +3,8 @@ import { withSlackClient } from "../shared/withSlackClient";
 import { getAiMessageBlocks } from "./message-signature";
 
 type Input = {
+  /** Slack team ID or unique workspace name. Ask the user to choose when ambiguous. */
+  workspace?: string;
   /**
    * The recipient's Slack conversation ID or user ID. Conversation IDs start with C, D, or G. User IDs start with U or W.
    * Use Get Channels or Get Users to find the ID. When a user ID is provided, the tool opens or finds the direct message first.
@@ -79,4 +81,6 @@ async function sendMessage(input: Input) {
   };
 }
 
-export default withSlackClient(sendMessage);
+export default async function run(input: Input) {
+  return withSlackClient(input, sendMessage, true);
+}

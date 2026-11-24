@@ -1,7 +1,10 @@
-import { getSlackWebClient } from "../shared/client/WebClient";
+import { workspaceKey } from "../shared/client/workspaces";
+import { getSlackWebClient, getWorkspace } from "../shared/client/WebClient";
 import { withSlackClient } from "../shared/withSlackClient";
 
 type Input = {
+  /** Slack team ID or unique workspace name. Ask the user to choose when ambiguous. */
+  workspace?: string;
   /**
    * A name, display name, username, or email address to search for.
    */
@@ -19,7 +22,7 @@ async function findUsers(input: Input) {
   let cursor: string | undefined;
 
   do {
-    const response = await slackWebClient.users.list({ limit: 200, cursor });
+    const response = await slackWebClient.users.list({ team_id: getWorkspace().teamId, limit: 200, cursor });
 
     if (response.error) {
       throw new Error(response.error);
@@ -57,7 +60,9 @@ async function findUsers(input: Input) {
     cursor = response.response_metadata?.next_cursor || undefined;
   } while (cursor);
 
-  return matches;
+  return matches.map((row) => ({ ...row, teamId: getWorkspace().teamId, workspace: workspaceKey(getWorkspace()) }));
 }
 
-export default withSlackClient(findUsers);
+export default async function run(input: Input) {
+  return withSlackClient(input, findUsers);
+}

@@ -1,6 +1,8 @@
 import { showFailureToast, useCachedPromise } from "@raycast/utils";
-import { SlackClient, useMe } from "./shared/client";
-import { withSlackClient } from "./shared/withSlackClient";
+import { SlackClient } from "./shared/client";
+import { WorkspaceTarget, applyToWorkspaces } from "./shared/WorkspaceViews";
+import { inWorkspace } from "./shared/client/WebClient";
+import type { Workspace } from "./shared/client/workspaces";
 import { Action, ActionPanel, closeMainWindow, Icon, LaunchProps, List, popToRoot } from "@raycast/api";
 import { SLACK_EMOJI_CODE_MAP } from "./constants/emoji.constants";
 import { useCallback, useEffect, useMemo, useRef } from "react";
@@ -57,30 +59,32 @@ function normalizeExpiration(expiration?: string): string | undefined {
   return trimmed === "today" || trimmed === "week" || /^\d+$/.test(trimmed) ? trimmed : undefined;
 }
 
-function SlackStatusList(props: LaunchProps<{ arguments: Arguments.SetStatus }>) {
+type Props = LaunchProps<{ arguments: Arguments.SetStatus }>;
+function SlackStatusList(props: Props & { targets: Workspace[] }) {
   const { statusText: statusTextArgument, emoji: emojiArgument, expiration: expirationArgument } = props.arguments;
 
-  const { data: me, isLoading: isFetchMeLoading } = useMe();
+  const { targets } = props;
+  const single = targets.length === 1;
   const {
-    data: profile,
+    data: cachedProfile,
     isLoading: isFetchProfileLoading,
     mutate,
-  } = useCachedPromise(
-    async (userId?: string) => {
-      if (!userId) {
-        throw new Error("[getUserProfileById] UserId required");
-      }
-
-      return SlackClient.getUserProfileById(userId);
-    },
-    me?.id ? [me?.id] : [undefined],
-    {
-      execute: !!me?.id,
-    },
+  } = useCachedPromise((w: Workspace) => inWorkspace(w, () => SlackClient.getUserProfileById(w.userId)), [targets[0]], {
+    execute: single,
+  });
+  const profile = single ? cachedProfile : undefined;
+  const isLoading = single && isFetchProfileLoading;
+  const setStatus = useCallback(
+    (update: Parameters<typeof SlackClient.setStatus>[0]) =>
+      applyToWorkspaces(targets, async (w) => {
+        const profile =
+          update.emoji === undefined || update.statusText === undefined || update.expiration === undefined
+            ? await SlackClient.getUserProfileById(w.userId)
+            : undefined;
+        return SlackClient.setStatus({ ...update, originProfile: profile });
+      }),
+    [targets],
   );
-  const isLoading = useMemo(() => {
-    return isFetchProfileLoading || isFetchMeLoading;
-  }, [isFetchProfileLoading, isFetchMeLoading]);
 
   const currentStatusEmoji = useMemo(() => {
     if (!profile?.status_emoji) {
@@ -147,41 +151,39 @@ function SlackStatusList(props: LaunchProps<{ arguments: Arguments.SetStatus }>)
   }, [profile?.status_expiration]);
 
   const handeStatusChange = useCallback(
-    async (form: Pick<SlackStatusForm, "statusText" | "emoji" | "expiration">) => {
+    async (form: Partial<Pick<SlackStatusForm, "statusText" | "emoji" | "expiration">>) => {
       await showToastWithPromise(
         async () => {
-          await SlackClient.setStatus({
+          await setStatus({
             statusText: form.statusText,
             emoji: form.emoji,
             expiration: form.expiration,
-            originProfile: profile,
           });
 
-          await mutate();
+          if (single) await mutate();
         },
         {
           loading: "The status is changing...",
           error: "An error occurred while changing the state.",
           success: () => ({
             title: "Set status emoji, text",
-            message: `${form.emoji} ${form.statusText}`,
+            message: [form.emoji, form.statusText].filter(Boolean).join(" "),
           }),
         },
       );
     },
-    [mutate, profile],
+    [mutate, setStatus, single],
   );
 
   const handleEmojiChange = useCallback(
     async (emoji: { name: string; value: string }) => {
       await showToastWithPromise(
         async () => {
-          await SlackClient.setStatus({
+          await setStatus({
             emoji: emoji.name,
-            originProfile: profile,
           });
 
-          await mutate();
+          if (single) await mutate();
         },
         {
           loading: "The status emoji is changing...",
@@ -193,20 +195,19 @@ function SlackStatusList(props: LaunchProps<{ arguments: Arguments.SetStatus }>)
         },
       );
     },
-    [mutate, profile],
+    [mutate, setStatus, single],
   );
 
   const clearStatus = useCallback(async () => {
     await showToastWithPromise(
       async () => {
-        await SlackClient.setStatus({
+        await setStatus({
           emoji: "",
           statusText: "",
           expiration: 0,
-          originProfile: profile,
         });
 
-        await mutate();
+        if (single) await mutate();
       },
       {
         loading: "The status emoji is changing...",
@@ -214,7 +215,7 @@ function SlackStatusList(props: LaunchProps<{ arguments: Arguments.SetStatus }>)
         success: `The status has been removed.`,
       },
     );
-  }, [mutate, profile]);
+  }, [mutate, setStatus, single]);
 
   // Gate on whether arguments were *passed*, not on whether the emoji resolves — an emoji we can't
   // map still needs to reach the effect so it can report the failure instead of silently no-op-ing.
@@ -224,7 +225,7 @@ function SlackStatusList(props: LaunchProps<{ arguments: Arguments.SetStatus }>)
 
   useEffect(() => {
     // When launched via deep link or a Quicklink with arguments, set the status directly and close.
-    if (!hasLaunchArguments || didAutoSetStatus.current || isFetchMeLoading || isFetchProfileLoading) {
+    if (!hasLaunchArguments || didAutoSetStatus.current || isLoading) {
       return;
     }
 
@@ -254,7 +255,7 @@ function SlackStatusList(props: LaunchProps<{ arguments: Arguments.SetStatus }>)
 
     // Preserving the field that wasn't passed relies on the current profile. If it failed to
     // load, setting only one field would clear the other, so bail with feedback instead.
-    if ((statusText === undefined || emoji === undefined) && !profile) {
+    if ((statusText === undefined || emoji === undefined) && single && !profile) {
       didAutoSetStatus.current = true;
       showFailureToast(new Error("Couldn't load your current Slack status."), { title: "Failed to set status" });
       return;
@@ -264,13 +265,12 @@ function SlackStatusList(props: LaunchProps<{ arguments: Arguments.SetStatus }>)
 
     showToastWithPromise(
       async () => {
-        await SlackClient.setStatus({
+        await setStatus({
           statusText,
           emoji,
           expiration,
-          originProfile: profile,
         });
-        await mutate();
+        if (single) await mutate();
         await popToRoot();
         await closeMainWindow();
       },
@@ -288,7 +288,9 @@ function SlackStatusList(props: LaunchProps<{ arguments: Arguments.SetStatus }>)
   }, [
     hasLaunchArguments,
     hasEmojiArgument,
-    isFetchMeLoading,
+    isLoading,
+    single,
+    setStatus,
     isFetchProfileLoading,
     profile,
     mutate,
@@ -298,14 +300,16 @@ function SlackStatusList(props: LaunchProps<{ arguments: Arguments.SetStatus }>)
   ]);
 
   return (
-    <List isLoading={isLoading}>
-      <List.Section title={"Current Status"}>
-        <List.Item
-          title={getCurrentStatusText("No Status Text")}
-          icon={currentStatusEmoji}
-          subtitle={currentStatusExpirationText}
-        />
-      </List.Section>
+    <List navigationTitle={single ? targets[0].teamName : "All Workspaces"} isLoading={isLoading}>
+      {single && (
+        <List.Section title={"Current Status"}>
+          <List.Item
+            title={getCurrentStatusText("No Status Text")}
+            icon={currentStatusEmoji}
+            subtitle={currentStatusExpirationText}
+          />
+        </List.Section>
+      )}
 
       <List.Section title={"Actions"}>
         <List.Item
@@ -317,15 +321,22 @@ function SlackStatusList(props: LaunchProps<{ arguments: Arguments.SetStatus }>)
                 title={"Open Status Form"}
                 target={
                   <StatusForm
+                    allowKeep={!single}
                     emojis={statusFormEmojis}
                     formInitialValues={{
                       statusText: getCurrentStatusText(),
-                      emoji: getCurrentStatusEmojiName(),
-                      duration: getDurationOptionFromTimestamp(currentStatusExpiration),
+                      emoji: single ? getCurrentStatusEmojiName() : "keep",
+                      duration: single ? getDurationOptionFromTimestamp(currentStatusExpiration) : "keep",
                       customUntil: currentStatusExpiration === 0 ? null : new Date(currentStatusExpiration * 1000),
                       expiration: currentStatusExpiration,
                     }}
-                    onSubmit={handeStatusChange}
+                    onSubmit={(v) =>
+                      handeStatusChange({
+                        statusText: single || v.statusText.trim() ? v.statusText : undefined,
+                        emoji: v.emoji === "keep" ? undefined : v.emoji,
+                        expiration: v.duration === "keep" ? undefined : v.expiration,
+                      })
+                    }
                   />
                 }
               />
@@ -337,7 +348,10 @@ function SlackStatusList(props: LaunchProps<{ arguments: Arguments.SetStatus }>)
           icon={"😁"}
           actions={
             <ActionPanel>
-              <Action.Push title={"Choose Emoji"} target={<EmojiPicker onSelect={handleEmojiChange} />} />
+              <Action.Push
+                title={"Choose Emoji"}
+                target={<EmojiPicker workspace={single ? targets[0] : undefined} onSelect={handleEmojiChange} />}
+              />
             </ActionPanel>
           }
         />
@@ -366,4 +380,6 @@ function SlackStatusList(props: LaunchProps<{ arguments: Arguments.SetStatus }>)
   );
 }
 
-export default withSlackClient(SlackStatusList);
+export default function Command(props: Props) {
+  return <WorkspaceTarget allowAll>{(targets) => <SlackStatusList {...props} targets={targets} />}</WorkspaceTarget>;
+}

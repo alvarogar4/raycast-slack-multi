@@ -1,9 +1,13 @@
+import { confirmationWorkspace } from "../shared/client/workspaces";
+import { accounts } from "../shared/client/WebClient";
 import { Tool } from "@raycast/api";
 import { getCanvasWebClient } from "../shared/client/WebClient";
 import { editCanvas, validateCanvasEdit, parseCanvasSectionTypes } from "../shared/client/canvas";
 import { withSlackClient } from "../shared/withSlackClient";
 
 type Input = {
+  /** Current workspace identifier (team ID and registration). Use the identifier returned by a workspace lookup, or retry using the identifier supplied when choosing a team ID. */
+  workspace?: string;
   /** Existing canvas URL or F-prefixed ID. Read Canvas first. */
   canvas: string;
   /** One targeted Slack operation. Replace/delete operate on an entire section; whole-canvas replacement is prohibited. Do not rebuild a table or rich section to change a cell or preserve its formatting. */
@@ -21,6 +25,7 @@ type Input = {
 };
 
 export const confirmation: Tool.Confirmation<Input> = async (input) => {
+  const workspace = confirmationWorkspace(await accounts.list(), input.workspace);
   const { canvasId } = validateCanvasEdit({ ...input, sectionTypes: parseCanvasSectionTypes(input.sectionTypes) });
   return {
     message:
@@ -30,6 +35,7 @@ export const confirmation: Tool.Confirmation<Input> = async (input) => {
           ? "Replace the entire matching section? Replacement Markdown may change its formatting."
           : "Apply this change to the Slack canvas?",
     info: [
+      { name: "Workspace", value: workspace.teamName + " (" + workspace.teamId + ")" },
       { name: "Canvas", value: canvasId },
       { name: "Operation", value: input.operation },
       ...(input.sectionId ? [{ name: "Section", value: input.sectionId }] : []),
@@ -53,4 +59,6 @@ async function tool(input: Input): Promise<{
   return editCanvas(getCanvasWebClient(), { ...input, sectionTypes: parseCanvasSectionTypes(input.sectionTypes) });
 }
 
-export default withSlackClient(tool);
+export default async function run(input: Input) {
+  return withSlackClient(input, tool, "confirmed");
+}

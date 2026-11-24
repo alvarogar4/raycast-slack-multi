@@ -1,10 +1,12 @@
 import { getSlackWebClient } from "../shared/client/WebClient";
-import { shouldRetryAfterMissingScope, withSlackClient } from "../shared/withSlackClient";
+import { withSlackClient } from "../shared/withSlackClient";
 import { getAiMessageBlocks } from "./message-signature";
 import { access } from "node:fs/promises";
 import path from "node:path";
 
 type Input = {
+  /** Slack team ID or unique workspace name. Ask the user to choose when ambiguous. */
+  workspace?: string;
   /**
    * The Slack conversation ID to send the files to. Conversation IDs start with C, D, or G; never pass a U or W user ID. To send files to a person, first use Read Conversation with their user ID, then pass its returned channel ID.
    *
@@ -62,10 +64,6 @@ function mapUploadError(error: unknown): Error {
 }
 
 async function uploadFiles(input: Input) {
-  return performUploadFiles(input);
-}
-
-async function performUploadFiles(input: Input, retried = false) {
   const channel = input.channel.trim();
   if (!CONVERSATION_ID_PATTERN.test(channel)) {
     throw new Error("Invalid Slack conversation ID");
@@ -116,9 +114,6 @@ async function performUploadFiles(input: Input, retried = false) {
       })),
     });
   } catch (error) {
-    if (await shouldRetryAfterMissingScope(error, retried)) {
-      return withSlackClient((input: Input) => performUploadFiles(input, true))(input);
-    }
     throw mapUploadError(error);
   }
 
@@ -152,4 +147,6 @@ async function performUploadFiles(input: Input, retried = false) {
   };
 }
 
-export default withSlackClient(uploadFiles);
+export default async function run(input: Input) {
+  return withSlackClient(input, uploadFiles, true);
+}

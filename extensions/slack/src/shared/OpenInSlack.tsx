@@ -1,3 +1,4 @@
+import type { Workspace } from "./client/workspaces";
 import { Action, Icon, open, closeMainWindow, getApplications, getPreferenceValues } from "@raycast/api";
 import { runAppleScript } from "@raycast/utils";
 import { useEffect, useState } from "react";
@@ -41,12 +42,14 @@ export const RetrySlackConnection = ({ retry }: { retry: () => void }) => (
 
 // https://api.slack.com/reference/deep-linking
 export const OpenChatInSlack = ({
+  workspace,
   workspaceId,
   userId,
   isAppInstalled,
   conversationId,
   onAction,
 }: {
+  workspace: Workspace;
   workspaceId: string;
   userId: string;
   isAppInstalled: boolean;
@@ -79,7 +82,7 @@ export const OpenChatInSlack = ({
         title="Open in Browser"
         icon={Icon.Globe}
         onAction={() =>
-          directMessageAction(userId, conversationId, async (id) => {
+          directMessageAction(workspace, userId, conversationId, async (id) => {
             await open(`https://app.slack.com/client/${workspaceId}/${id}`);
             await onAction?.();
             await closeMainWindow();

@@ -3,13 +3,14 @@ import { useCachedPromise, useCachedState } from "@raycast/utils";
 import { format, formatDistanceToNow } from "date-fns";
 import { useState } from "react";
 import * as emoji from "node-emoji";
-import { SendMessage } from "./send-message";
+import { SendMessage } from "./shared/SendMessage";
 
-import { withSlackClient } from "./shared/withSlackClient";
-import { getSlackWebClient } from "./shared/client/WebClient";
+import { WorkspaceList } from "./shared/WorkspaceViews";
+import { type Workspace, workspaceKey } from "./shared/client/workspaces";
+import { inWorkspace, getSlackWebClient } from "./shared/client/WebClient";
 import { downloadSlackFile } from "./shared/client/downloadFile";
 import { convertTimestampToDate, handleError } from "./shared/utils";
-import { useChannels, useMe, type User } from "./shared/client";
+import { useChannels, type User } from "./shared/client";
 import { SearchMessagesArguments } from "@slack/web-api";
 
 import { matchesAllWords } from "./shared/client/pagination";
@@ -89,36 +90,44 @@ function FromActions({
   );
 }
 
-function Search() {
-  const [query, setQuery] = useState("");
-  const [selectedChannel, setSelectedChannel] = useState("");
+function MessageRows({
+  workspace,
+  query,
+  setQuery,
+}: {
+  workspace: Workspace;
+  query: string;
+  setQuery: (s: string) => void;
+}) {
+  const [sortType, setSortType] = useCachedState<SearchMessagesArguments["sort"]>(
+    "search-sort-type:" + workspaceKey(workspace),
+    "timestamp",
+  );
 
-  const [sortType, setSortType] = useCachedState<SearchMessagesArguments["sort"]>("search-sort-type", "timestamp");
-
-  const { data: me } = useMe();
-  const { data: channels } = useChannels();
+  const { data: channels } = useChannels(workspace);
   const users = channels?.[0];
 
-  const meInfo = users?.find((u) => u.id === me?.id);
+  const meInfo = users?.find((u) => u.id === workspace.userId);
 
   const { data, isLoading } = useCachedPromise(
-    async (query, channel, sort) => {
-      const webClient = getSlackWebClient();
+    (w: Workspace, query: string, sort: SearchMessagesArguments["sort"]) =>
+      inWorkspace(w, async () => {
+        const webClient = getSlackWebClient();
 
-      const results = await webClient.search.messages({
-        query: `${query}${channel ? ` in:${channel}` : ""}`,
-        sort,
-      });
+        const results = await webClient.search.messages({
+          query,
+          sort,
+        });
 
-      return results.messages?.matches ?? [];
-    },
-    [query, selectedChannel, sortType],
+        return results.messages?.matches ?? [];
+      }),
+    [workspace, query, sortType],
     {
       onError(error) {
         handleError(error);
       },
       execute: query.length > 0,
-      keepPreviousData: true,
+      keepPreviousData: false,
     },
   );
 
@@ -128,154 +137,135 @@ function Search() {
   ];
 
   return (
-    <List
-      isLoading={isLoading}
-      searchText={query}
-      onSearchTextChange={setQuery}
-      actions={
-        <ActionPanel>
-          <FromActions users={users} meInfo={meInfo} query={query} setQuery={setQuery} />
-        </ActionPanel>
-      }
-      throttle
-      isShowingDetail={data && data.length > 0}
-      searchBarAccessory={
-        <List.Dropdown tooltip="Search Channels" onChange={setSelectedChannel}>
-          <List.Dropdown.Item value="" title="All Channels" />
-          {channels ? (
-            <List.Dropdown.Section>
-              {channels.flat().map((c) => {
-                return (
-                  <List.Dropdown.Item
-                    key={c.id}
-                    icon={c.icon}
-                    value={"username" in c ? c.username : "groupName" in c ? c.groupName : c.name}
-                    title={c.name}
-                  />
-                );
-              })}
-            </List.Dropdown.Section>
-          ) : null}
-        </List.Dropdown>
-      }
-    >
-      {data === undefined ? (
-        <List.EmptyView
-          title="Search Slack messages"
-          description="Type something in the search bar to start searching."
-        />
-      ) : null}
-      {data?.map((m) => {
-        if (!m.text || !m.ts) return null;
-        const user = users?.find((u) => u.id === m.user);
-        const files = ((m as { files?: MatchFile[] }).files ?? []).filter((file) => file.id);
-        const date = convertTimestampToDate(m.ts);
-        if (!Number.isFinite(date.getTime())) return null;
-        const text = emoji.emojify(m.text);
-        const formattedDate = format(date, "EEEE dd MMMM yyyy 'at' HH:mm");
-        return (
-          <List.Item
-            key={m.iid}
-            icon={{ value: user?.icon ?? Icon.Person, tooltip: user?.name ?? "Unknown user" }}
-            title={text}
-            accessories={[{ date, tooltip: formattedDate }]}
-            detail={
-              <List.Item.Detail
-                markdown={text}
-                metadata={
-                  <List.Item.Detail.Metadata>
-                    {m.type === "message" && m.channel ? (
-                      <List.Item.Detail.Metadata.Label title="Channel Name" icon={Icon.Hashtag} text={m.channel.name} />
-                    ) : null}
+    <List.Section title={workspace.teamName} subtitle={isLoading ? "Searching…" : undefined}>
+      {query &&
+        data?.map((m) => {
+          if (!m.text || !m.ts) return null;
+          const user = users?.find((u) => u.id === m.user);
+          const files = ((m as { files?: MatchFile[] }).files ?? []).filter((file) => file.id);
+          const date = convertTimestampToDate(m.ts);
+          if (!Number.isFinite(date.getTime())) return null;
+          const text = emoji.emojify(m.text);
+          const formattedDate = format(date, "EEEE dd MMMM yyyy 'at' HH:mm");
+          return (
+            <List.Item
+              key={m.iid}
+              icon={{ value: user?.icon ?? Icon.Person, tooltip: user?.name ?? "Unknown user" }}
+              title={text}
+              accessories={[{ tag: workspace.teamName }, { date, tooltip: formattedDate }]}
+              detail={
+                <List.Item.Detail
+                  markdown={text}
+                  metadata={
+                    <List.Item.Detail.Metadata>
+                      {m.type === "message" && m.channel ? (
+                        <List.Item.Detail.Metadata.Label
+                          title="Channel Name"
+                          icon={Icon.Hashtag}
+                          text={m.channel.name}
+                        />
+                      ) : null}
 
-                    {user ? <List.Item.Detail.Metadata.Label title="From" icon={user.icon} text={user.name} /> : null}
+                      {user ? <List.Item.Detail.Metadata.Label title="From" icon={user.icon} text={user.name} /> : null}
 
-                    <List.Item.Detail.Metadata.Label
-                      title="Posted"
-                      icon={Icon.Clock}
-                      text={formatDistanceToNow(date)}
+                      <List.Item.Detail.Metadata.Label
+                        title="Posted"
+                        icon={Icon.Clock}
+                        text={formatDistanceToNow(date)}
+                      />
+                    </List.Item.Detail.Metadata>
+                  }
+                />
+              }
+              actions={
+                <ActionPanel>
+                  {m.permalink ? <Action.OpenInBrowser url={m.permalink} title="Open Message" /> : null}
+
+                  {m.permalink ? (
+                    <Action.CopyToClipboard
+                      content={m.permalink}
+                      title="Copy Message URL"
+                      shortcut={{ modifiers: ["cmd", "shift"], key: "c" }}
                     />
-                  </List.Item.Detail.Metadata>
-                }
-              />
-            }
-            actions={
-              <ActionPanel>
-                {m.permalink ? <Action.OpenInBrowser url={m.permalink} title="Open Message" /> : null}
+                  ) : null}
 
-                {m.permalink ? (
-                  <Action.CopyToClipboard
-                    content={m.permalink}
-                    title="Copy Message URL"
-                    shortcut={{ modifiers: ["cmd", "shift"], key: "c" }}
-                  />
-                ) : null}
+                  {user && (
+                    <Action.Push
+                      title={`Message ${user.name}`}
+                      icon={Icon.Message}
+                      target={<SendMessage workspace={workspace} recipient={user.id} recipientName={user.name} />}
+                      shortcut={{ modifiers: ["cmd", "shift"], key: "s" }}
+                    />
+                  )}
 
-                {user && (
-                  <Action.Push
-                    title={`Message ${user.name}`}
-                    icon={Icon.Message}
-                    target={<SendMessage recipient={user.id} recipientName={user.name} />}
-                    shortcut={{ modifiers: ["cmd", "shift"], key: "s" }}
-                  />
-                )}
+                  {files.length === 1 ? (
+                    <Action
+                      title="Download Attachment"
+                      icon={Icon.Download}
+                      shortcut={{
+                        macOS: { modifiers: ["cmd", "shift"], key: "d" },
+                        Windows: { modifiers: ["ctrl", "shift"], key: "d" },
+                      }}
+                      onAction={() => inWorkspace(workspace, () => downloadAttachment(files[0]))}
+                    />
+                  ) : files.length > 1 ? (
+                    <ActionPanel.Submenu
+                      title="Download Attachment"
+                      icon={Icon.Download}
+                      shortcut={{
+                        macOS: { modifiers: ["cmd", "shift"], key: "d" },
+                        Windows: { modifiers: ["ctrl", "shift"], key: "d" },
+                      }}
+                    >
+                      {files.map((file, index) => (
+                        <Action
+                          key={file.id ?? index}
+                          title={file.name ?? file.title ?? file.id ?? "Attachment"}
+                          icon={Icon.Download}
+                          onAction={() => inWorkspace(workspace, () => downloadAttachment(file))}
+                        />
+                      ))}
+                    </ActionPanel.Submenu>
+                  ) : null}
 
-                {files.length === 1 ? (
-                  <Action
-                    title="Download Attachment"
-                    icon={Icon.Download}
-                    shortcut={{
-                      macOS: { modifiers: ["cmd", "shift"], key: "d" },
-                      Windows: { modifiers: ["ctrl", "shift"], key: "d" },
-                    }}
-                    onAction={() => downloadAttachment(files[0])}
-                  />
-                ) : files.length > 1 ? (
-                  <ActionPanel.Submenu
-                    title="Download Attachment"
-                    icon={Icon.Download}
-                    shortcut={{
-                      macOS: { modifiers: ["cmd", "shift"], key: "d" },
-                      Windows: { modifiers: ["ctrl", "shift"], key: "d" },
-                    }}
-                  >
-                    {files.map((file, index) => (
+                  <ActionPanel.Section>
+                    <ActionPanel.Submenu
+                      title="Sort by"
+                      icon={Icon.ArrowUp}
+                      shortcut={{ modifiers: ["cmd", "shift"], key: "s" }}
+                    >
+                      {sortOptions.map((s) => (
+                        <Action
+                          key={s.sort}
+                          autoFocus={sortType === s.sort}
+                          icon={sortType === s.sort ? { source: Icon.CheckCircle, tintColor: Color.Green } : undefined}
+                          title={s.title}
+                          onAction={() => setSortType(s.sort)}
+                        />
+                      ))}
+                    </ActionPanel.Submenu>
+
+                    {m.channel?.name && (
                       <Action
-                        key={file.id ?? index}
-                        title={file.name ?? file.title ?? file.id ?? "Attachment"}
-                        icon={Icon.Download}
-                        onAction={() => downloadAttachment(file)}
+                        title="Search in This Channel"
+                        onAction={() => setQuery("in:" + m.channel?.name + " " + query)}
                       />
-                    ))}
-                  </ActionPanel.Submenu>
-                ) : null}
-
-                <ActionPanel.Section>
-                  <ActionPanel.Submenu
-                    title="Sort by"
-                    icon={Icon.ArrowUp}
-                    shortcut={{ modifiers: ["cmd", "shift"], key: "s" }}
-                  >
-                    {sortOptions.map((s) => (
-                      <Action
-                        key={s.sort}
-                        autoFocus={sortType === s.sort}
-                        icon={sortType === s.sort ? { source: Icon.CheckCircle, tintColor: Color.Green } : undefined}
-                        title={s.title}
-                        onAction={() => setSortType(s.sort)}
-                      />
-                    ))}
-                  </ActionPanel.Submenu>
-
-                  <FromActions users={users} meInfo={meInfo} query={query} setQuery={setQuery} />
-                </ActionPanel.Section>
-              </ActionPanel>
-            }
-          />
-        );
-      })}
-    </List>
+                    )}
+                    <FromActions users={users} meInfo={meInfo} query={query} setQuery={setQuery} />
+                  </ActionPanel.Section>
+                </ActionPanel>
+              }
+            />
+          );
+        })}
+    </List.Section>
   );
 }
 
-export default withSlackClient(Search);
+export default function Search() {
+  return (
+    <WorkspaceList placeholder="Search messages (in:channel, from:me…)" detail>
+      {(workspace, query, setQuery) => <MessageRows {...{ workspace, query, setQuery }} />}
+    </WorkspaceList>
+  );
+}

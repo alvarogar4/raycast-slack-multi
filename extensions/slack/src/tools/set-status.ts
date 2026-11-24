@@ -1,7 +1,9 @@
-import { getSlackWebClient, slack } from "../shared/client/WebClient";
+import { getSlackWebClient } from "../shared/client/WebClient";
 import { withSlackClient } from "../shared/withSlackClient";
 
 type Input = {
+  /** Slack team ID or unique workspace name. Ask the user to choose when ambiguous. */
+  workspace?: string;
   /**
    * Status text. Keep it short and omit the duration. Provide an empty string together with an empty emoji to clear the status. Omit both text and emoji when only changing snooze.
    */
@@ -19,8 +21,6 @@ type Input = {
    */
   snoozeMinutes?: number;
 };
-
-let retried = false;
 
 async function setStatus(input: Input) {
   const hasStatusInput = input.text !== undefined || input.emoji !== undefined || input.duration !== undefined;
@@ -44,48 +44,41 @@ async function setStatus(input: Input) {
 
   const slackWebClient = getSlackWebClient();
 
-  try {
-    const [statusResponse, snoozeResponse] = await Promise.all([
-      hasStatusInput
-        ? slackWebClient.users.profile.set({
-            profile: {
-              status_text: input.text,
-              status_emoji: input.emoji,
-              status_expiration: input.duration ? Math.floor(Date.now() / 1000) + input.duration : 0,
-            },
-          })
-        : undefined,
-      input.snoozeMinutes === undefined
-        ? undefined
-        : input.snoozeMinutes === 0
-          ? slackWebClient.dnd.endSnooze()
-          : slackWebClient.dnd.setSnooze({ num_minutes: input.snoozeMinutes }),
-    ]);
+  const [statusResponse, snoozeResponse] = await Promise.all([
+    hasStatusInput
+      ? slackWebClient.users.profile.set({
+          profile: {
+            status_text: input.text,
+            status_emoji: input.emoji,
+            status_expiration: input.duration ? Math.floor(Date.now() / 1000) + input.duration : 0,
+          },
+        })
+      : undefined,
+    input.snoozeMinutes === undefined
+      ? undefined
+      : input.snoozeMinutes === 0
+        ? slackWebClient.dnd.endSnooze()
+        : slackWebClient.dnd.setSnooze({ num_minutes: input.snoozeMinutes }),
+  ]);
 
-    if (statusResponse?.error) {
-      throw new Error(statusResponse.error);
-    }
-    if (snoozeResponse?.error) {
-      throw new Error(snoozeResponse.error);
-    }
-
-    return {
-      profile: statusResponse?.profile,
-      snooze: hasSnoozeInput
-        ? {
-            enabled: input.snoozeMinutes !== 0,
-            minutes: input.snoozeMinutes,
-          }
-        : undefined,
-    };
-  } catch (error) {
-    if (error instanceof Error && error.message.includes("missing_scope") && !retried) {
-      retried = true;
-      await slack.client.removeTokens();
-      return withSlackClient(setStatus)(input);
-    }
-    throw error;
+  if (statusResponse?.error) {
+    throw new Error(statusResponse.error);
   }
+  if (snoozeResponse?.error) {
+    throw new Error(snoozeResponse.error);
+  }
+
+  return {
+    profile: statusResponse?.profile,
+    snooze: hasSnoozeInput
+      ? {
+          enabled: input.snoozeMinutes !== 0,
+          minutes: input.snoozeMinutes,
+        }
+      : undefined,
+  };
 }
 
-export default withSlackClient(setStatus);
+export default async function run(input: Input) {
+  return withSlackClient(input, setStatus);
+}

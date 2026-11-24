@@ -1,8 +1,11 @@
-import { getSlackWebClient } from "../shared/client/WebClient";
+import { workspaceKey } from "../shared/client/workspaces";
+import { getSlackWebClient, getWorkspace } from "../shared/client/WebClient";
 import { formatSlackFiles } from "../shared/utils";
 import { withSlackClient } from "../shared/withSlackClient";
 
 type Input = {
+  /** Slack team ID or unique workspace name. Ask the user to choose when ambiguous. */
+  workspace?: string;
   /**
    * A Slack conversation ID, user ID, or message permalink. Conversation IDs start with C, D, or G. User IDs start with U or W. Passing a user ID opens or finds the DM and returns its D-prefixed channel ID; use that channel ID with Upload Files.
    */
@@ -144,4 +147,10 @@ function formatMessage(message: {
   };
 }
 
-export default withSlackClient(readConversation);
+export default async function run(input: Input) {
+  return withSlackClient(input, async (input) => {
+    const output = await readConversation(input);
+    const source = { teamId: getWorkspace().teamId, workspace: workspaceKey(getWorkspace()) };
+    return { ...output, ...source };
+  });
+}

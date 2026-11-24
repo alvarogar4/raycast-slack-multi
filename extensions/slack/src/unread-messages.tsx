@@ -3,33 +3,35 @@ import { isEqual } from "lodash";
 import { useEffect, useRef, useState } from "react";
 import { convertSlackEmojiToUnicode } from "./shared/utils";
 
-import { Message, SlackClient, useChannels, useMe, User, useUnreadConversations } from "./shared/client";
-import { withSlackClient } from "./shared/withSlackClient";
+import { Message, SlackClient, useChannels, User, useUnreadConversations } from "./shared/client";
+import { WorkspaceList } from "./shared/WorkspaceViews";
+import { type Workspace, workspaceKey } from "./shared/client/workspaces";
+import { inWorkspace } from "./shared/client/WebClient";
 import { handleError, timeDifference } from "./shared/utils";
-import { OpenChannelInSlack, RetrySlackConnection, useSlackApp } from "./shared/OpenInSlack";
-
-const conversationsStorageKey = "$unread-messages$selected-conversations";
+import { OpenChannelInSlack, useSlackApp } from "./shared/OpenInSlack";
 
 // Storage writes run one after another across screen instances, so the newest selection is always written last
 // and a reopened configuration never races a write still in flight from the previous one.
 let storageQueue: Promise<void> = Promise.resolve();
-let saveCount = 0;
 
-function UnreadMessages() {
-  const { data: me, error: workspaceError, revalidate: retryWorkspace } = useMe();
+function UnreadRows({ workspace, query }: { workspace: Workspace; query: string }) {
+  const conversationsStorageKey = "unread:" + workspaceKey(workspace);
   const [selectedConversations, setSelectedConversations] = useState<string[]>();
 
   const { isAppInstalled, isLoading } = useSlackApp();
-  const { data, isLoading: isLoadingChannels, error: channelsError } = useChannels();
+  const { data, isLoading: isLoadingChannels, error: channelsError } = useChannels(workspace);
 
   const [users, channels, groups] = data ?? [];
 
   const {
-    data: unreadConversations,
+    data: unread,
+    error: unreadError,
+    revalidate: retryUnread,
     isLoading: isLoadingUnreadConversations,
     mutate,
-  } = useUnreadConversations(selectedConversations);
+  } = useUnreadConversations(workspace, selectedConversations);
 
+  const unreadConversations = unread?.conversations;
   const setConversations = async () => {
     let conversations: string[] | undefined;
     const apply = storageQueue.then(async () => {
@@ -76,11 +78,16 @@ function UnreadMessages() {
 
   const markConversationAsRead = async (conversationId: string, actionTriggeredManually?: boolean): Promise<void> => {
     try {
-      await mutate(SlackClient.markAsRead(conversationId), {
-        optimisticUpdate(data) {
-          return data?.filter((c) => c.conversationId !== conversationId);
+      await mutate(
+        inWorkspace(workspace, () => SlackClient.markAsRead(conversationId)),
+        {
+          optimisticUpdate(data) {
+            return (
+              data && { ...data, conversations: data.conversations.filter((c) => c.conversationId !== conversationId) }
+            );
+          },
         },
-      });
+      );
 
       if (actionTriggeredManually) {
         showToast({
@@ -96,39 +103,84 @@ function UnreadMessages() {
   };
 
   return (
-    <List isLoading={!selectedConversations || isLoadingUnreadConversations || isLoadingChannels || isLoading}>
+    <List.Section
+      title={workspace.teamName}
+      subtitle={
+        !selectedConversations || isLoadingUnreadConversations || isLoadingChannels || isLoading
+          ? "Loading…"
+          : undefined
+      }
+    >
+      {(unreadError || !!unread?.failed.length) && (
+        <List.Item
+          title="Could not read all followed conversations"
+          subtitle={unread?.failed.join(", ")}
+          accessories={[{ tag: workspace.teamName }]}
+          actions={
+            <ActionPanel>
+              <Action title="Retry" onAction={retryUnread} />
+              <Action.Push
+                title="Configure"
+                target={
+                  <Configuration
+                    storageKey={conversationsStorageKey}
+                    data={data}
+                    refreshConversations={refreshConversations}
+                  />
+                }
+              />
+            </ActionPanel>
+          }
+        />
+      )}
       {selectedConversations && selectedConversations.length === 0 && (
-        <List.EmptyView
+        <List.Item
           icon={Icon.Gear}
           actions={
             <ActionPanel>
               <Action.Push
                 icon={Icon.Gear}
                 title="Configure"
-                target={<Configuration data={data} refreshConversations={refreshConversations} />}
+                target={
+                  <Configuration
+                    storageKey={conversationsStorageKey}
+                    data={data}
+                    refreshConversations={refreshConversations}
+                  />
+                }
               />
             </ActionPanel>
           }
           title="Select Conversations"
-          description="You need to configure this command by selecting conversations that you want to observe. You can choose up to 30 due to Slack API restrictions."
+          accessories={[{ tag: workspace.teamName }]}
+          subtitle="Choose up to 30 conversations to follow"
         />
       )}
 
       {selectedConversations &&
         selectedConversations.length > 0 &&
-        (!unreadConversations || unreadConversations.length === 0) && (
-          <List.EmptyView
+        unread &&
+        !unreadError &&
+        !unread.failed.length &&
+        unread.conversations.length === 0 && (
+          <List.Item
             actions={
               <ActionPanel>
                 <Action.Push
                   icon={Icon.Gear}
                   title="Configure"
-                  target={<Configuration data={data} refreshConversations={refreshConversations} />}
+                  target={
+                    <Configuration
+                      storageKey={conversationsStorageKey}
+                      data={data}
+                      refreshConversations={refreshConversations}
+                    />
+                  }
                 />
               </ActionPanel>
             }
             title="No Unread Messages Found"
-            description="Configure command again for observing different conversations."
+            accessories={[{ tag: workspace.teamName }]}
           />
         )}
 
@@ -140,6 +192,13 @@ function UnreadMessages() {
               channels?.find((channel) => channel.id === unreadConversation.conversationId) ??
               groups?.find((group) => group.id === unreadConversation.conversationId);
 
+            if (
+              query &&
+              ![conversation?.name, unreadConversation.messageHistory[0]?.message].some((v) =>
+                v?.toLowerCase().includes(query.toLowerCase()),
+              )
+            )
+              return null;
             return (
               <List.Item
                 key={unreadConversation.conversationId}
@@ -147,28 +206,25 @@ function UnreadMessages() {
                 subtitle={convertSlackEmojiToUnicode(unreadConversation.messageHistory[0].message)}
                 icon={conversation?.icon}
                 accessories={[
+                  { tag: workspace.teamName },
                   { text: timeDifference(new Date(unreadConversation.messageHistory[0].receivedAt)) },
                   { icon: Icon.Message, text: `${unreadConversation.messageHistory.length}` },
                 ]}
                 actions={
                   <ActionPanel>
-                    {me?.teamId ? (
-                      <OpenChannelInSlack
-                        workspaceId={me.teamId}
-                        channelId={unreadConversation.conversationId}
-                        isAppInstalled={isAppInstalled}
-                        onAction={() => markConversationAsRead(unreadConversation.conversationId)}
-                      />
-                    ) : (
-                      <RetrySlackConnection retry={retryWorkspace} />
-                    )}
+                    <OpenChannelInSlack
+                      workspaceId={workspace.teamId}
+                      channelId={unreadConversation.conversationId}
+                      isAppInstalled={isAppInstalled}
+                      onAction={() => markConversationAsRead(unreadConversation.conversationId)}
+                    />
                     <Action
                       shortcut={{ modifiers: ["cmd", "shift"], key: "enter" }}
                       title="Mark as Read"
                       icon={Icon.Checkmark}
                       onAction={() => markConversationAsRead(unreadConversation.conversationId, true)}
                     />
-                    {workspaceError && me?.teamId ? <RetrySlackConnection retry={retryWorkspace} /> : null}
+
                     <Action.Push
                       title="Show Unread Messages"
                       icon={Icon.Sidebar}
@@ -185,7 +241,13 @@ function UnreadMessages() {
                       title="Configure Command"
                       icon={Icon.Gear}
                       shortcut={{ modifiers: ["opt"], key: "c" }}
-                      target={<Configuration data={data} refreshConversations={refreshConversations} />}
+                      target={
+                        <Configuration
+                          storageKey={conversationsStorageKey}
+                          data={data}
+                          refreshConversations={refreshConversations}
+                        />
+                      }
                     />
                   </ActionPanel>
                 }
@@ -194,7 +256,7 @@ function UnreadMessages() {
           })}
         </>
       )}
-    </List>
+    </List.Section>
   );
 }
 
@@ -226,11 +288,12 @@ function UnreadMessagesConversation({
 }
 
 type ConfigurationProps = {
+  storageKey: string;
   data: ReturnType<typeof useChannels>["data"];
   refreshConversations: () => Promise<void>;
 };
 
-function Configuration({ data, refreshConversations }: ConfigurationProps) {
+function Configuration({ data, refreshConversations, storageKey: conversationsStorageKey }: ConfigurationProps) {
   const { pop } = useNavigation();
   // Leave only after pending writes finish, so reopening configuration reads the latest selection
   const done = async () => {
@@ -240,6 +303,7 @@ function Configuration({ data, refreshConversations }: ConfigurationProps) {
   const [selectedConversations, setSelectedConversations] = useState<string[]>([]);
   // The latest selection, so toggles made before a re-render build on each other
   const latestSelection = useRef<string[]>([]);
+  const saveCount = useRef(0);
   const hasEdited = useRef(false);
   const [users, channels, groups] = data ?? [];
 
@@ -279,7 +343,7 @@ function Configuration({ data, refreshConversations }: ConfigurationProps) {
       // Persist on its own queue. The Slack refresh reads that write back, but must not sit on the queue:
       // Done waits for writes only, and a slow refresh must not delay the next selection.
       const selection = JSON.stringify(updatedSelectedConversations);
-      const saveId = ++saveCount;
+      const saveId = ++saveCount.current;
       const write = storageQueue.then(() => LocalStorage.setItem(conversationsStorageKey, selection));
       storageQueue = write.catch(async (error) => {
         await handleError(error, "Could not save the selected conversations");
@@ -287,7 +351,7 @@ function Configuration({ data, refreshConversations }: ConfigurationProps) {
       void write
         .then(
           () => {
-            if (saveId !== saveCount) return;
+            if (saveId !== saveCount.current) return;
             return refreshConversations();
           },
           () => undefined,
@@ -359,4 +423,10 @@ function Configuration({ data, refreshConversations }: ConfigurationProps) {
   );
 }
 
-export default withSlackClient(UnreadMessages);
+export default function UnreadMessages() {
+  return (
+    <WorkspaceList placeholder="Filter unread conversations">
+      {(workspace, query) => <UnreadRows workspace={workspace} query={query} />}
+    </WorkspaceList>
+  );
+}

@@ -8,7 +8,7 @@ interface ConversationItem {
   icon: Image.ImageLike;
 }
 
-export type Channel = ConversationItem;
+export type Channel = ConversationItem & { directUserId?: string; notJoined?: boolean };
 
 export type Group = ConversationItem & {
   groupName: string;
@@ -18,6 +18,14 @@ export function getConversationTeamId(conversation: SlackConversation): string {
   return conversation.context_team_id ?? conversation.internal_team_ids?.[0] ?? conversation.shared_team_ids?.[0] ?? "";
 }
 
+export function directoryConversation(conversation: SlackConversation, workspaceId: string): SlackConversation {
+  return {
+    ...conversation,
+    context_team_id: getConversationTeamId(conversation) || workspaceId,
+    name: conversation.name || (conversation.is_im ? conversation.user || conversation.id : undefined),
+  };
+}
+
 export function toChannel(conversation: SlackConversation): Channel | undefined {
   const teamId = getConversationTeamId(conversation);
   if (!conversation.id || !conversation.name || !teamId) return undefined;
@@ -25,8 +33,10 @@ export function toChannel(conversation: SlackConversation): Channel | undefined 
   return {
     id: conversation.id,
     name: conversation.name,
+    ...(conversation.is_im && conversation.user ? { directUserId: conversation.user } : {}),
+    ...(conversation.is_member === false && !conversation.is_private && !conversation.is_im ? { notJoined: true } : {}),
     teamId,
-    icon: conversation.is_private ? "channel-private.png" : "channel-public.png",
+    icon: conversation.is_private || conversation.is_im ? "channel-private.png" : "channel-public.png",
   };
 }
 

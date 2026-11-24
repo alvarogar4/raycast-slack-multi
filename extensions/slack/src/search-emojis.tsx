@@ -1,7 +1,9 @@
 import { useCallback, useMemo, useState } from "react";
 import { Action, ActionPanel, Grid, Icon, AI, environment, getPreferenceValues } from "@raycast/api";
 import { useAI, useCachedPromise } from "@raycast/utils";
-import { withSlackClient } from "./shared/withSlackClient";
+import { WorkspaceTarget } from "./shared/WorkspaceViews";
+import { inWorkspace } from "./shared/client/WebClient";
+import { type Workspace, workspaceKey } from "./shared/client/workspaces";
 import { SlackClient } from "./shared/client";
 import { useEmojiRanking, type EmojiEntry } from "./shared/useEmojiRanking";
 
@@ -37,12 +39,15 @@ function EmojiItem({
   );
 }
 
-function Command() {
+function Command({ workspace }: { workspace: Workspace }) {
   const { emojiSortOrder = "most-used" } = getPreferenceValues<Preferences.SearchEmojis>();
   const [searchText, setSearchText] = useState("");
   const [displayLimit, setDisplayLimit] = useState(DISPLAY_LIMIT);
 
-  const { data, isLoading } = useCachedPromise(SlackClient.getWorkspaceEmojis);
+  const { data, isLoading } = useCachedPromise(
+    (w: Workspace) => inWorkspace(w, SlackClient.getWorkspaceEmojis),
+    [workspace],
+  );
 
   const emojis = useMemo(() => Object.entries(data ?? {}) as EmojiEntry[], [data]);
 
@@ -73,7 +78,11 @@ function Command() {
     return filteredEmojis;
   }, [searchText, emojis, filteredEmojis, aiEmojiEntries, executeAISearch]);
 
-  const { entries: rankedEmojis, visitItem, resetRanking } = useEmojiRanking(emojiEntries, emojiSortOrder);
+  const {
+    entries: rankedEmojis,
+    visitItem,
+    resetRanking,
+  } = useEmojiRanking(emojiEntries, emojiSortOrder, workspaceKey(workspace));
 
   // Not memoized on purpose: the ranked array may keep its reference when the ranking changes.
   const visibleEmojis = rankedEmojis.slice(0, displayLimit);
@@ -120,4 +129,6 @@ function Command() {
   );
 }
 
-export default withSlackClient(Command);
+export default function EmojiCommand() {
+  return <WorkspaceTarget>{([workspace]) => <Command workspace={workspace} />}</WorkspaceTarget>;
+}
