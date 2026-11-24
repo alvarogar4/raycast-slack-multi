@@ -60,9 +60,19 @@ export function directoryUsersToShow<User>(
 /** Shares one bounded member scan between user rows and MPIM name resolution for a query. */
 export function createDirectoryUserSearch<User>(
   loadMembers: () => Promise<{ users: User[]; userNames: ReadonlyMap<string, string> }>,
+  currentSignal?: () => AbortSignal | undefined,
 ) {
   let members: ReturnType<typeof loadMembers> | undefined;
-  const getMembers = () => (members ??= loadMembers());
+  let startedWith: AbortSignal | undefined;
+  const getMembers = () => {
+    const signal = currentSignal?.();
+    // Raycast can restart a command with the same query and a fresh abort controller.
+    if (!members || signal !== startedWith) {
+      startedWith = signal;
+      members = loadMembers();
+    }
+    return members;
+  };
   return {
     getUsers: async () => (await getMembers()).users,
     getUserNames: async () => (await getMembers()).userNames,

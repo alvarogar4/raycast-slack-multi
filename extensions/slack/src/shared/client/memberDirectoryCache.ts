@@ -1,6 +1,6 @@
 import { Cache } from "@raycast/api";
 import type { SlackMember } from "./slackTypes";
-import { toUserName } from "./member";
+import { memberDisplayName } from "./member";
 import { planMemberDirectoryRead } from "./memberDirectoryRefresh";
 
 /** `pages` keeps the layout of the scan that produced the snapshot (in memory only), so a search that began on the live scan can finish reading it by page index after the scan completes. */
@@ -9,12 +9,15 @@ type Snapshot = { savedAt: number; members: SlackMember[]; pages?: SlackMember[]
 const cache = new Cache({ capacity: 20 * 1024 * 1024 });
 const memory = new Map<string, Snapshot>();
 
-/** Keeps only fields used for search and for building User rows; drops deleted users and bots. */
+/** Keeps the profile fields used by the directory, including names of existing DM partners. */
 export function slimMember(member: SlackMember): SlackMember | undefined {
-  if (!toUserName(member)) return undefined;
+  if (!member.id || !memberDisplayName(member)) return undefined;
   const { profile } = member;
   return {
     id: member.id,
+    is_bot: member.is_bot,
+    deleted: member.deleted,
+    is_workflow_bot: member.is_workflow_bot,
     team_id: member.team_id,
     name: member.name,
     real_name: member.real_name,
@@ -119,7 +122,7 @@ async function readLoadPage(load: Load, index: number): Promise<MemberPage> {
 }
 
 export function clearFailedMemberLoad(accountKey: string) {
-  const key = "member-directory:" + accountKey;
+  const key = "member-directory-v2:" + accountKey;
   if (loads.get(key)?.failedAt !== undefined) loads.delete(key);
 }
 
@@ -133,7 +136,7 @@ export type MemberPage = { items: SlackMember[]; hasMore: boolean; error?: unkno
  * Only a complete scan is cached.
  */
 export async function getMemberPage(accountKey: string, fetchPage: FetchPage, index: number): Promise<MemberPage> {
-  const key = "member-directory:" + accountKey;
+  const key = "member-directory-v2:" + accountKey;
   const snapshot = read(key);
   const now = Date.now();
   const age = snapshot ? now - snapshot.savedAt : Infinity;

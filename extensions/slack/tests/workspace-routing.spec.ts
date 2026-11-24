@@ -14,6 +14,7 @@ import {
 import { SlackClient } from "../src/shared/client/SlackClient";
 import { confirmationWorkspace, workspaceKey } from "../src/shared/client/workspaces";
 import SetStatus from "../src/set-status";
+import { namedDirectoryRows } from "../src/search";
 import send from "../src/tools/send-message";
 import getEmojis from "../src/tools/get-emojis";
 import { clearFailedMemberLoad } from "../src/shared/client/memberDirectoryCache";
@@ -34,6 +35,7 @@ vi.mock("@raycast/utils", () => ({
       },
     }),
   },
+  withCache: (fn: unknown) => fn,
   showFailureToast: vi.fn(),
   useCachedPromise: () => ({
     data: { status_text: "private cached text", status_emoji: ":private:", status_expiration: 123 },
@@ -80,6 +82,32 @@ dispatch.mockImplementation(async (config) => {
       break;
     case "users.list":
     case "conversations.list":
+      if (team === "TDIRECT01" || team === "TDIRECT02") {
+        const cursor = args.get("cursor");
+        const peer = { id: "U00000101", name: "peer", team_id: team, real_name: "Late Member " + team };
+        const items =
+          method === "users.list"
+            ? {
+                members: cursor
+                  ? [peer, { id: "UBOT00101", name: "bot", is_bot: true, profile: { display_name: "Support Bot" } }]
+                  : Array.from({ length: 100 }, (_, i) => ({ id: "UMEMBER" + i, name: "member" + i, team_id: team })),
+              }
+            : {
+                channels: [
+                  { id: "C00000001", name: "general" },
+                  { id: "D00000001", is_im: true, user: peer.id },
+                  { id: "D00000002", is_im: true, user: "UBOT00101" },
+                  { id: "D00000003", is_im: true, user: "UUNKNOWN1" },
+                  { id: "D00000004", is_im: true, user: "UEXTERNAL" },
+                ],
+              };
+        data = {
+          ok: true,
+          ...items,
+          response_metadata: { next_cursor: method === "users.list" && !cursor ? "next" : "" },
+        };
+        break;
+      }
       if (team === "TRETRY001") {
         const cursor = args.get("cursor");
         const items =
@@ -128,6 +156,14 @@ dispatch.mockImplementation(async (config) => {
       data = { ok: true, emoji: { shared: "https://example.org/" + team } };
       break;
     case "users.info":
+      if (args.get("user") === "UEXTERNAL") {
+        data = { ok: true, user: { id: "UEXTERNAL", profile: { display_name: "External Guest" } } };
+        break;
+      }
+      if (args.get("user") === "UUNKNOWN1") {
+        data = { ok: false, error: "access_denied" };
+        break;
+      }
       data = { ok: true, user: { id: "U00000001", team_id: "TPARTNER1", name: "visitor" } };
       break;
     case "chat.postMessage":
@@ -298,4 +334,46 @@ it("retries partial member and channel directories with the same query", async (
   clearFailedConversationLoad(workspaceKey(w));
   expect((await members()).users.map((u) => u.name)).toEqual(["member-one", "member-two"]);
   expect((await channels()).map((c) => c.title)).toEqual(["#two · " + w.teamName]);
+});
+
+it("names DMs beyond the people limit and keeps the same user ID separate in each workspace", async () => {
+  for (const team of ["TDIRECT01", "TDIRECT02"]) {
+    const workspace = await addWorkspace("xoxp-fixture-" + team);
+    await inWorkspace(workspace, async () => {
+      const [channels] = await SlackClient.searchConversations("", undefined, undefined, "channels");
+      const users = await SlackClient.searchUsers("");
+      expect(users).toHaveLength(100);
+      expect(namedDirectoryRows(channels, new Map(), "D00000001", true)).toMatchObject([
+        { id: "D00000001", name: "Loading direct message…" },
+      ]);
+      expect(namedDirectoryRows(channels, new Map(), "general", true).map((item) => item.name)).toEqual(["general"]);
+      const names = await SlackClient.getDirectMessageNames(undefined, () => {});
+      const rows = namedDirectoryRows([...users, ...channels], names, "", false);
+      expect(rows.find((item) => item.id === "D00000001")?.name).toBe("Late Member " + team);
+      expect(rows.find((item) => item.id === "D00000002")?.name).toBe("Support Bot");
+      expect(rows.find((item) => item.id === "D00000003")?.name).toBe("Profile unavailable");
+      expect(rows.find((item) => item.id === "D00000004")?.name).toBe("External Guest");
+      const dm = channels.find((item) => item.id === "D00000001")!;
+      expect(namedDirectoryRows([dm], new Map(), "", false, [{ ...dm, name: "Saved Name" }])[0].name).toBe(
+        "Saved Name",
+      );
+      const saved = { ...users[0], id: "U00000101", name: "U00000101" };
+      const savedPerson = { ...saved, name: "Saved Person" };
+      expect(namedDirectoryRows([dm], new Map(), "Saved Person", false, [savedPerson])).toMatchObject([
+        { id: dm.id, name: "Saved Person", rankingId: savedPerson.id },
+      ]);
+      expect(namedDirectoryRows([savedPerson, dm], names, "", false, [dm])).toMatchObject([
+        { id: savedPerson.id, rankingId: dm.id, conversationId: dm.id },
+      ]);
+      expect(namedDirectoryRows([dm], names, "", false, [saved])).toMatchObject([
+        { id: saved.id, name: "Late Member " + team, conversationId: dm.id },
+      ]);
+      expect(namedDirectoryRows(channels, names, "late", false).map((item) => item.id)).toEqual(["D00000001"]);
+      const person = await SlackClient.searchUsers("Late Member");
+      expect(namedDirectoryRows([...person, ...channels], names, "Late", false)).toMatchObject([
+        { id: "U00000101", name: "Late Member " + team, conversationId: "D00000001" },
+      ]);
+      expect(calls.filter((call) => call.team === team && call.method === "users.list")).toHaveLength(2);
+    });
+  }
 });

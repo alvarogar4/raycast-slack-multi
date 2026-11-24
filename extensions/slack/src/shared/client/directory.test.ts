@@ -101,3 +101,26 @@ test("empty query does not surface another workspace's recents when the cache is
   const t2Visited = visitedDirectoryItemsForWorkspace([{ id: "C-later", name: "later", teamId: "T2" }], "T2");
   assert.ok(mergeVisitedDirectoryItems(results, t2Visited, "")?.some((item) => item.id === "C-later"));
 });
+
+test("a restarted search replaces an aborted shared lookup for the same query", async () => {
+  let controller = new AbortController();
+  let calls = 0;
+  const search = createDirectoryUserSearch(
+    async () => {
+      const signal = controller.signal;
+      calls++;
+      await Promise.resolve();
+      signal.throwIfAborted();
+      return { users: ["Alice"], userNames: new Map([["alice", "Alice"]]) };
+    },
+    () => controller.signal,
+  );
+  const cancelled = search.getUsers();
+  controller.abort();
+  controller = new AbortController();
+  await assert.rejects(cancelled, { name: "AbortError" });
+  const [users, names] = await Promise.all([search.getUsers(), search.getUserNames()]);
+  assert.deepEqual(users, ["Alice"]);
+  assert.equal(names.get("alice"), "Alice");
+  assert.equal(calls, 2);
+});

@@ -34,26 +34,31 @@ export const useDirectorySearch = (workspace: Workspace, query: string) => {
   const conversationSearchAbortable = useRef<AbortController>(null);
   const [preview, setPreview] = useState<{ query: string; users: User[] }>();
 
-  const [partialChannels, setPartialChannels] = useState<{ query: string; rows: Channel[] }>();
+  const [partialChannels, setPartialChannels] = useState<Channel[]>([]);
+  const [partialNames, setPartialNames] = useState<ReadonlyMap<string, string>>(new Map());
+  const peerAbortable = useRef<AbortController>(null);
   const [partialGroups, setPartialGroups] = useState<{ query: string; rows: Group[] }>();
   const userSearch = useMemo(
     () =>
-      createDirectoryUserSearch(() => {
-        const signal = userSearchAbortable.current?.signal;
-        return inWorkspace(workspace, () =>
-          SlackClient.searchDirectoryMembers(
-            query,
-            signal,
-            (matched) => {
-              if (signal?.aborted) return;
-              setPreview({ query, users: matched });
-            },
-            (error) => {
-              if (!signal?.aborted) setMemberFailure({ query, attempt, error });
-            },
-          ),
-        );
-      }),
+      createDirectoryUserSearch(
+        () => {
+          const signal = userSearchAbortable.current?.signal;
+          return inWorkspace(workspace, () =>
+            SlackClient.searchDirectoryMembers(
+              query,
+              signal,
+              (matched) => {
+                if (signal?.aborted) return;
+                setPreview({ query, users: matched });
+              },
+              (error) => {
+                if (!signal?.aborted) setMemberFailure({ query, attempt, error });
+              },
+            ),
+          );
+        },
+        () => userSearchAbortable.current?.signal,
+      ),
     [workspace, query, attempt],
   );
 
@@ -71,16 +76,29 @@ export const useDirectorySearch = (workspace: Workspace, query: string) => {
       },
     },
   );
+  const peerNames = usePromise(
+    ({ workspace }: { workspace: Workspace; attempt: number }) => {
+      const signal = peerAbortable.current?.signal;
+      return inWorkspace(workspace, () => SlackClient.getDirectMessageNames(signal, setPartialNames));
+    },
+    [{ workspace, attempt }],
+    {
+      abortable: peerAbortable,
+      onError(error) {
+        handleError(error, "Could not load direct message names");
+      },
+    },
+  );
   const channels = usePromise(
-    ({ query: searchText }: { query: string; attempt: number }) => {
+    ({ workspace }: { workspace: Workspace; attempt: number; query: string }) => {
       const signal = channelSearchAbortable.current?.signal;
       return inWorkspace(workspace, () =>
-        SlackClient.searchConversations(searchText, signal, undefined, "channels", (rows) => {
-          if (!signal?.aborted) setPartialChannels({ query: searchText, rows });
+        SlackClient.searchConversations("", signal, undefined, "channels", (rows) => {
+          if (!signal?.aborted) setPartialChannels(rows);
         }),
       );
     },
-    [{ query, attempt }],
+    [{ workspace, attempt, query }],
     {
       abortable: channelSearchAbortable,
       onError(error) {
@@ -110,12 +128,14 @@ export const useDirectorySearch = (workspace: Workspace, query: string) => {
 
   return {
     data: mergeDirectorySearchResults(shownUsers, [
-      (!channels.isLoading && !channels.error ? channels.data?.[0] : undefined) ??
-        (partialChannels?.query === query ? partialChannels.rows : []),
+      (!channels.isLoading && !channels.error ? channels.data?.[0] : undefined) ?? partialChannels,
       (!conversations.isLoading && !conversations.error ? conversations.data?.[1] : undefined) ??
         (partialGroups?.query === query ? partialGroups.rows : []),
     ]),
+    peerNames: peerNames.data ?? partialNames,
+    loadingNames: peerNames.isLoading,
     error:
+      peerNames.error ||
       channels.error ||
       conversations.error ||
       users.error ||
@@ -126,7 +146,7 @@ export const useDirectorySearch = (workspace: Workspace, query: string) => {
       clearFailedConversationLoad(key);
       setAttempt((value) => value + 1);
     },
-    isLoading: users.isLoading || channels.isLoading || conversations.isLoading,
+    isLoading: peerNames.isLoading || users.isLoading || channels.isLoading || conversations.isLoading,
   };
 };
 

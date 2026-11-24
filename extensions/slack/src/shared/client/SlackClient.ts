@@ -1,7 +1,9 @@
 import { Icon, Image } from "@raycast/api";
+import { withCache } from "@raycast/utils";
+import { memberDirectoryFreshMs } from "./memberDirectoryRefresh";
 import { handleError } from "../utils";
-import { getWorkspace, getSlackWebClient } from "./WebClient";
-import { workspaceKey } from "./workspaces";
+import { getWorkspace, getSlackWebClient, inWorkspace } from "./WebClient";
+import { workspaceKey, type Workspace } from "./workspaces";
 import type { SlackMember } from "./slackTypes";
 import { formatRelative } from "date-fns";
 import { Profile } from "@slack/web-api/dist/types/response/UsersProfileGetResponse";
@@ -11,7 +13,7 @@ import { searchConversationDirectory, searchUserNames } from "./conversationSear
 import { directoryConversation, toChannel, toGroup } from "./conversation";
 import type { Channel, Group } from "./conversation";
 import { isMemberDirectoryScanError, searchMemberDirectory } from "./memberSearch";
-import { toUserName } from "./member";
+import { memberDisplayName, toUserName } from "./member";
 import { getMemberPage } from "./memberDirectoryCache";
 import { getConversationPage, getMemberChannelPage } from "./channelDirectoryCache";
 import type { ConversationPage, ConversationPageOptions } from "./channelDirectoryCache";
@@ -182,6 +184,28 @@ export async function loadMemberChannelDirectoryPage(cursor?: string) {
   return toConversationCursorPage(page, index);
 }
 
+// Some Slack Connect peers are visible in DMs but absent from this workspace's users.list.
+const lookupDirectMessageName = withCache(
+  async (workspace: Workspace, user: string) =>
+    inWorkspace(workspace, async () => {
+      try {
+        const { user: member } = await getSlackWebClient().users.info({ user });
+        return member?.id === user ? (memberDisplayName(member) ?? null) : null;
+      } catch (error) {
+        const code = (error as { data?: { error?: string } })?.data?.error;
+        if (
+          code === "access_denied" ||
+          code === "user_not_found" ||
+          code === "user_not_visible" ||
+          code === "users_not_found"
+        )
+          return null;
+        throw error;
+      }
+    }),
+  { maxAge: memberDirectoryFreshMs },
+);
+
 export class SlackClient {
   public static async getUsers(): Promise<User[]> {
     const slackWebClient = getSlackWebClient();
@@ -265,6 +289,47 @@ export class SlackClient {
     });
 
     return groups.sort((a, b) => sortNames(a.name, b.name));
+  }
+
+  public static async getDirectMessageNames(
+    signal: AbortSignal | undefined,
+    onPage: (names: ReadonlyMap<string, string>) => void,
+  ) {
+    const names = new Map<string, string>();
+    const load = createMemberPageLoader();
+    let cursor: string | undefined;
+    do {
+      signal?.throwIfAborted();
+      const page = await load(cursor);
+      signal?.throwIfAborted();
+      for (const member of page.items) {
+        const name = memberDisplayName(member);
+        if (member.id && name) names.set(member.id, name);
+      }
+      cursor = page.nextCursor;
+      if (cursor || page.error) onPage(new Map(names));
+      if (page.error) throw page.error;
+    } while (cursor);
+    onPage(new Map(names));
+    const visited = new Set<string>();
+    do {
+      signal?.throwIfAborted();
+      const page = await loadConversationDirectoryPage(cursor);
+      for (const dm of page.items) {
+        signal?.throwIfAborted();
+        if (!dm.is_im || !dm.user || names.has(dm.user) || visited.has(dm.user)) continue;
+        visited.add(dm.user);
+        const name = await lookupDirectMessageName(getWorkspace(), dm.user);
+        signal?.throwIfAborted();
+        if (name) {
+          names.set(dm.user, name);
+          onPage(new Map(names));
+        }
+      }
+      if (page.error) throw page.error;
+      cursor = page.nextCursor;
+    } while (cursor);
+    return names;
   }
 
   public static async searchUsers(query: string, signal?: AbortSignal): Promise<User[]> {

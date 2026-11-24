@@ -19,6 +19,7 @@ import { useState } from "react";
 import { WorkspaceList } from "./shared/WorkspaceViews";
 import { inWorkspace, getSlackWebClient } from "./shared/client/WebClient";
 import { type Workspace, workspaceKey } from "./shared/client/workspaces";
+import { matchesAllWords } from "./shared/client/pagination";
 import { handleError } from "./shared/utils";
 import { useCachedState, useFrecencySorting } from "@raycast/utils";
 import { OpenChannelInSlack, OpenChatInSlack, useSlackApp } from "./shared/OpenInSlack";
@@ -33,7 +34,7 @@ import {
   visitedDirectoryItemsForWorkspace,
 } from "./shared/client/directory";
 
-type OpenChannelItem = User | Channel | Group;
+type OpenChannelItem = (User | Channel | Group) & { rankingId?: string };
 
 const { displayExtraMetadata } = getPreferenceValues<Preferences.Search>();
 
@@ -64,10 +65,10 @@ function searchItemAccessories(
   return searchMetadata;
 }
 
-function CopyIdAction({ id }: { id: string }) {
+function CopyIdAction({ id, title = "Copy ID to Clipboard" }: { id: string; title?: string }) {
   return (
     <Action.CopyToClipboard
-      title="Copy ID to Clipboard"
+      title={title}
       content={id}
       shortcut={{
         macOS: { modifiers: ["cmd", "shift"], key: "c" },
@@ -75,6 +76,86 @@ function CopyIdAction({ id }: { id: string }) {
       }}
     />
   );
+}
+
+const loadingPeer = "Loading direct message…";
+const unavailablePeer = "Profile unavailable";
+
+function readablePeerName(name: string | undefined, userId: string | undefined, conversationId?: string) {
+  return name &&
+    !/^[UWD][A-Z0-9]{8,}$/.test(name) &&
+    name !== userId &&
+    name !== conversationId &&
+    name !== loadingPeer &&
+    name !== unavailablePeer
+    ? name
+    : undefined;
+}
+
+export function namedDirectoryRows(
+  items: OpenChannelItem[],
+  names: ReadonlyMap<string, string>,
+  query: string,
+  loadingNames: boolean,
+  recents: readonly OpenChannelItem[] = [],
+): OpenChannelItem[] {
+  const rows = mergeVisitedDirectoryItems(items, recents, query) ?? [];
+  const people = new Set(rows.filter((item) => "username" in item).map((person) => person.id));
+  const saved = new Map(recents.map((item) => [item.id, item.name]));
+  // Recents are newest first. Keep the same frecency key when a DM and its person become one row.
+  const rankingById = new Map<string, string>();
+  for (const recent of [...recents].reverse()) {
+    const key = recent.rankingId ?? recent.id;
+    rankingById.set(recent.id, key);
+    if ("directUserId" in recent && recent.directUserId) rankingById.set(recent.directUserId, key);
+    if ("conversationId" in recent && recent.conversationId) rankingById.set(recent.conversationId, key);
+  }
+  const directIds = new Map<string, string>();
+  for (const item of rows) {
+    if ("directUserId" in item && item.directUserId) directIds.set(item.directUserId, item.id);
+  }
+  const placeholder = loadingNames ? loadingPeer : unavailablePeer;
+  return rows.flatMap((item): OpenChannelItem[] => {
+    if ("username" in item) {
+      const conversationId = directIds.get(item.id) ?? item.conversationId;
+      const name =
+        names.get(item.id) ??
+        readablePeerName(item.name, item.id) ??
+        readablePeerName(saved.get(item.id), item.id, conversationId) ??
+        (conversationId && readablePeerName(saved.get(conversationId), item.id, conversationId)) ??
+        placeholder;
+      return [
+        {
+          ...item,
+          name,
+          conversationId,
+          rankingId:
+            rankingById.get(item.id) ??
+            (conversationId && rankingById.get(conversationId)) ??
+            conversationId ??
+            item.id,
+        },
+      ];
+    }
+    if ("groupName" in item) return [item]; // Group search already matched participant names.
+    if (!item.id.startsWith("D")) return matchesAllWords([item.name], query) ? [item] : [];
+    const peer = item.directUserId;
+    if (peer && people.has(peer)) return [];
+    const name =
+      (peer && names.get(peer)) ||
+      readablePeerName(item.name, peer, item.id) ||
+      readablePeerName(saved.get(item.id), peer, item.id) ||
+      (peer && readablePeerName(saved.get(peer), peer, item.id));
+    if (!matchesAllWords([name, peer, item.id], query)) return [];
+    return [
+      {
+        ...item,
+        name: name || placeholder,
+        icon: Icon.Person,
+        rankingId: (peer && rankingById.get(peer)) ?? rankingById.get(item.id) ?? item.id,
+      },
+    ];
+  });
 }
 
 export function DirectoryRows({
@@ -94,20 +175,13 @@ export function DirectoryRows({
     [],
   );
   const { isAppInstalled } = useSlackApp();
-  const { data, isLoading: loading, error, retry } = useDirectorySearch(workspace, searchText);
-
-  const people = new Map(data?.[0].map((person) => [person.id, person]));
-  const items = data?.flat().map((item) => {
-    if ("directUserId" in item && item.directUserId) {
-      const person = people.get(item.directUserId);
-      return { ...item, name: person?.name ?? item.name, icon: person?.icon ?? Icon.Person };
-    }
-    return item;
-  });
-  const channels = mergeVisitedDirectoryItems(
-    items,
-    visitedDirectoryItemsForWorkspace(recentItems, workspaceKey(workspace)),
+  const { data, isLoading: loading, peerNames, loadingNames, error, retry } = useDirectorySearch(workspace, searchText);
+  const channels = namedDirectoryRows(
+    data?.flat() ?? [],
+    peerNames,
     searchText,
+    loadingNames,
+    visitedDirectoryItemsForWorkspace(recentItems, workspaceKey(workspace)),
   );
 
   const {
@@ -115,7 +189,7 @@ export function DirectoryRows({
     visitItem,
     resetRanking,
   } = useFrecencySorting(channels, {
-    key: (item) => item.id,
+    key: (item) => item.rankingId ?? item.id,
     namespace: workspaceKey(workspace),
   });
 
@@ -141,12 +215,18 @@ export function DirectoryRows({
         const isUser = isSlackUserId(item.id);
         const notJoined = "notJoined" in item && item.notJoined && !joined.has(item.id);
 
-        const composer = <SendMessage workspace={workspace} recipient={item.id} recipientName={item.name} />;
+        const recipient = "conversationId" in item ? (item.conversationId ?? item.id) : item.id;
+        const unknownPeer =
+          item.name === unavailablePeer || item.name === loadingPeer
+            ? ("directUserId" in item && item.directUserId) || item.id
+            : undefined;
+        const composer = <SendMessage workspace={workspace} recipient={recipient} recipientName={item.name} />;
         if (compose)
           return (
             <List.Item
               key={item.id}
               title={item.name}
+              subtitle={unknownPeer}
               icon={item.icon}
               accessories={[{ tag: workspace.teamName }, ...(notJoined ? [{ tag: "Not joined" }] : [])]}
               actions={
@@ -172,7 +252,7 @@ export function DirectoryRows({
             <List.Item
               key={userId}
               title={name}
-              subtitle={displayExtraMetadata ? title : undefined}
+              subtitle={unknownPeer ?? (displayExtraMetadata ? title : undefined)}
               icon={icon}
               accessories={[
                 { tag: workspace.teamName },
@@ -238,7 +318,8 @@ export function DirectoryRows({
                     />
                   )}
 
-                  <CopyIdAction id={userId} />
+                  <CopyIdAction id={userId} title="Copy User ID" />
+                  {conversationId && <Action.CopyToClipboard title="Copy Conversation ID" content={conversationId} />}
 
                   <ActionPanel.Section>
                     <Action
@@ -259,6 +340,7 @@ export function DirectoryRows({
               key={channelId}
               accessories={[{ tag: workspace.teamName }, ...(notJoined ? [{ tag: "Not joined" }] : [])]}
               title={name}
+              subtitle={unknownPeer}
               icon={icon}
               actions={
                 <ActionPanel>
@@ -269,7 +351,7 @@ export function DirectoryRows({
                   {workspaceId && (
                     <Action.CreateQuicklink
                       quicklink={{
-                        name: `Open #${name} Channel`,
+                        name: channelId.startsWith("D") ? "Open Chat with " + name : `Open #${name} Channel`,
                         ...(isAppInstalled
                           ? {
                               link: `slack://channel?team=${workspaceId}&id=${channelId}`,
@@ -298,7 +380,10 @@ export function DirectoryRows({
                     />
                   )}
                   <Action.Push title="Send Message" target={composer} />
-                  <CopyIdAction id={channelId} />
+                  <CopyIdAction id={channelId} title={channelId.startsWith("D") ? "Copy Conversation ID" : undefined} />
+                  {"directUserId" in item && item.directUserId && (
+                    <Action.CopyToClipboard title="Copy User ID" content={item.directUserId} />
+                  )}
 
                   <ActionPanel.Section>
                     <Action
