@@ -9,22 +9,36 @@ import { workspaceKey } from "./workspaces";
 import { inWorkspace } from "./WebClient";
 import type { Workspace } from "./workspaces";
 
-export const useChannels = (workspace: Workspace) =>
-  usePromise(
-    (w: Workspace) =>
+export const useWorkspaceMembers = (workspace: Workspace) =>
+  usePromise((w: Workspace) => inWorkspace(w, SlackClient.getUsersWithApps), [workspace], {
+    onError: (error) => void handleError(error, "Failed to load workspace members"),
+  });
+
+export function useChannels(workspace: Workspace) {
+  const members = useWorkspaceMembers(workspace);
+  const conversations = usePromise(
+    (w: Workspace, users?: User[]) =>
       inWorkspace(w, async () => {
-        const users = await SlackClient.getUsers();
-        const channels = await SlackClient.getChannels();
-        const groups = await SlackClient.getGroups(users);
-        return [users, channels, groups] as const;
+        const [channels, groups] = await Promise.all([SlackClient.getChannels(), SlackClient.getGroups(users ?? [])]);
+        return [channels, groups] as const;
       }),
-    [workspace],
+    [workspace, members.data?.users],
     {
-      onError(error) {
-        handleError(error, "Failed to load channels");
-      },
+      execute: !!members.data,
+      onError: (error) => void handleError(error, "Failed to load channels"),
     },
   );
+  const data =
+    members.data && conversations.data
+      ? ([members.data.users, ...conversations.data, members.data] as const)
+      : undefined;
+  return {
+    members,
+    data,
+    isLoading: members.isLoading || (!!members.data && conversations.isLoading),
+    error: members.error ?? conversations.error,
+  };
+}
 
 export const useDirectorySearch = (workspace: Workspace, query: string, favoritePeers: string[]) => {
   const [attempt, setAttempt] = useState(0);

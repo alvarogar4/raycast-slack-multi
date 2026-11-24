@@ -36,7 +36,7 @@ function UnreadRows({
   const [selectedConversations, setSelectedConversations] = useState<string[]>();
 
   const { isAppInstalled, isLoading } = useSlackApp();
-  const { data, isLoading: isLoadingChannels, error: channelsError } = useChannels(workspace);
+  const { data, members, isLoading: isLoadingChannels, error: channelsError } = useChannels(workspace);
 
   const [users, channels, groups] = data ?? [];
 
@@ -60,7 +60,7 @@ function UnreadRows({
       if (users && channels && groups && !channelsError) {
         next = next.filter(
           (id: string) =>
-            !!users.find((user) => user.conversationId === id) ||
+            !!members.data?.imPeers.has(id) ||
             !!channels.find((channel) => channel.id === id) ||
             !!groups.find((group) => group.id === id),
         );
@@ -126,10 +126,11 @@ function UnreadRows({
     !unreadError &&
     unread?.failed.length === 0 &&
     unread.conversations.length === 0;
-  const hasNotice = unreadError || unread?.failed.length || selectedConversations?.length === 0 || settledEmpty;
-  const notice = hasNotice ? (
-    <>
-      {(unreadError || !!unread?.failed.length) && (
+  const notices = [];
+  if (unreadError || unread?.failed.length)
+    notices.push({
+      id: workspaceKey(workspace) + "/retry-unread",
+      element: (
         <List.Item
           title="Could not read all followed conversations"
           subtitle={unread?.failed.join(", ")}
@@ -143,6 +144,7 @@ function UnreadRows({
                   <Configuration
                     storageKey={conversationsStorageKey}
                     data={data}
+                    showApps={options.showApps}
                     refreshConversations={refreshConversations}
                   />
                 }
@@ -151,8 +153,12 @@ function UnreadRows({
             </ActionPanel>
           }
         />
-      )}
-      {selectedConversations && selectedConversations.length === 0 && (
+      ),
+    });
+  if (selectedConversations?.length === 0)
+    notices.push({
+      id: workspaceKey(workspace) + "/configure-unread",
+      element: (
         <List.Item
           icon={Icon.Gear}
           actions={
@@ -164,6 +170,7 @@ function UnreadRows({
                   <Configuration
                     storageKey={conversationsStorageKey}
                     data={data}
+                    showApps={options.showApps}
                     refreshConversations={refreshConversations}
                   />
                 }
@@ -175,9 +182,12 @@ function UnreadRows({
           accessories={[{ tag: workspace.teamName }]}
           subtitle="Choose up to 30 conversations to follow"
         />
-      )}
-
-      {settledEmpty && (
+      ),
+    });
+  if (settledEmpty)
+    notices.push({
+      id: workspaceKey(workspace) + "/no-unread",
+      element: (
         <List.Item
           actions={
             <ActionPanel>
@@ -188,6 +198,7 @@ function UnreadRows({
                   <Configuration
                     storageKey={conversationsStorageKey}
                     data={data}
+                    showApps={options.showApps}
                     refreshConversations={refreshConversations}
                   />
                 }
@@ -198,10 +209,16 @@ function UnreadRows({
           title="No Unread Messages Found"
           accessories={[{ tag: workspace.teamName }]}
         />
-      )}
-    </>
-  ) : undefined;
+      ),
+    });
   const rows = (unreadConversations ?? []).flatMap((unreadConversation) => {
+    const peer = unreadConversation.directUserId ?? members.data?.imPeers.get(unreadConversation.conversationId);
+    if (
+      unreadConversation.conversationId.startsWith("D") &&
+      !options.showApps &&
+      (!peer || !members.data?.usersById.has(peer))
+    )
+      return [];
     const conversation =
       users?.find((user) => user.conversationId === unreadConversation.conversationId) ??
       channels?.find((channel) => channel.id === unreadConversation.conversationId) ??
@@ -211,11 +228,10 @@ function UnreadRows({
       (message) => message.incoming ?? message.senderId !== workspace.userId,
     );
     const preview = incoming ?? unreadConversation.messageHistory[0];
-    const name = conversation?.name ?? unreadConversation.conversationId;
+    const name = conversation?.name ?? (peer && members.data?.apps.get(peer)) ?? unreadConversation.conversationId;
     if (query && ![name, preview.message].some((value) => value?.toLowerCase().includes(query.toLowerCase())))
       return [];
     const id = workspaceKey(workspace) + "/" + unreadConversation.conversationId;
-    const peer = unreadConversation.directUserId;
     const pin = conversation
       ? favoriteId(workspace, conversation)
       : peer
@@ -277,6 +293,7 @@ function UnreadRows({
                     <Configuration
                       storageKey={conversationsStorageKey}
                       data={data}
+                      showApps={options.showApps}
                       refreshConversations={refreshConversations}
                     />
                   }
@@ -289,7 +306,23 @@ function UnreadRows({
       },
     ];
   });
-  return children({ rows, loading, notice });
+  if (members.error)
+    notices.push({
+      id: workspaceKey(workspace) + "/retry-members",
+      element: (
+        <List.Item
+          title="Could not load direct message profiles"
+          accessories={[{ tag: workspace.teamName }]}
+          actions={
+            <ActionPanel>
+              <Action title="Retry" onAction={members.revalidate} />
+              {options.actions()}
+            </ActionPanel>
+          }
+        />
+      ),
+    });
+  return children({ rows, loading, notices });
 }
 
 function UnreadMessagesConversation({
@@ -320,12 +353,18 @@ function UnreadMessagesConversation({
 }
 
 type ConfigurationProps = {
+  showApps: boolean;
   storageKey: string;
   data: ReturnType<typeof useChannels>["data"];
   refreshConversations: () => Promise<void>;
 };
 
-function Configuration({ data, refreshConversations, storageKey: conversationsStorageKey }: ConfigurationProps) {
+function Configuration({
+  data,
+  refreshConversations,
+  storageKey: conversationsStorageKey,
+  showApps,
+}: ConfigurationProps) {
   const { pop } = useNavigation();
   // Leave only after pending writes finish, so reopening configuration reads the latest selection
   const done = async () => {
@@ -337,7 +376,18 @@ function Configuration({ data, refreshConversations, storageKey: conversationsSt
   const latestSelection = useRef<string[]>([]);
   const saveCount = useRef(0);
   const hasEdited = useRef(false);
-  const [users, channels, groups] = data ?? [];
+  const [users, channels, groups, members] = data ?? [];
+  const directMessages = [
+    ...(users ?? []).flatMap(({ conversationId, name, icon }) =>
+      conversationId ? [{ conversationId, name, icon }] : [],
+    ),
+    ...(showApps && members
+      ? [...members.imPeers].flatMap(([conversationId, peer]) => {
+          const name = members.apps.get(peer);
+          return name ? [{ conversationId, name, icon: Icon.AppWindow }] : [];
+        })
+      : []),
+  ];
 
   useEffect(() => {
     let cancelled = false;
@@ -402,8 +452,7 @@ function Configuration({ data, refreshConversations, storageKey: conversationsSt
   return (
     <List navigationTitle="Unread Messages — Configuration">
       <List.Section title="Direct Messages">
-        {users?.map(({ name, icon, conversationId }) => {
-          if (!conversationId) return;
+        {directMessages.map(({ name, icon, conversationId }) => {
           const isConversationSelected = selectedConversations.includes(conversationId);
           return (
             <List.Item
@@ -456,14 +505,18 @@ function Configuration({ data, refreshConversations, storageKey: conversationsSt
 }
 
 export default function UnreadMessages() {
-  const options = useConversationOptions(false);
+  const options = useConversationOptions();
   return (
     <WorkspaceList
       placeholder="Filter unread conversations"
       merged={(workspaces, query, renderList) =>
-        combinedConversations(workspaces, options, renderList, (workspace, next) => (
-          <UnreadRows {...{ workspace, query, options }}>{next}</UnreadRows>
-        ))
+        combinedConversations(
+          workspaces,
+          options,
+          renderList,
+          (workspace, next) => <UnreadRows {...{ workspace, query, options }}>{next}</UnreadRows>,
+          query,
+        )
       }
     />
   );

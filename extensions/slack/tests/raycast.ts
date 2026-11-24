@@ -3,7 +3,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { vi } from "vitest";
 
-export const environment = { supportPath: mkdtempSync(join(tmpdir(), "slack-multi-test-")) };
+export const environment = {
+  assetsPath: join(process.cwd(), "assets"),
+  supportPath: mkdtempSync(join(tmpdir(), "slack-multi-test-")),
+};
 const storage = new Map<string, string>();
 export const LocalStorage = {
   async allItems() {
@@ -19,6 +22,9 @@ export const LocalStorage = {
     storage.delete(key);
   },
 };
+export const getApplications = vi.fn();
+export const open = vi.fn();
+export const closeMainWindow = vi.fn();
 export const getPreferenceValues = () => ({});
 export class Cache {
   private entries = new Map<string, string>();
@@ -37,9 +43,23 @@ export const Form = Object.assign(() => null, {
   Checkbox: "Checkbox",
   DatePicker: "DatePicker",
 });
-export const ActionPanel = "ActionPanel";
-export const Action = { SubmitForm: "SubmitForm", Push: "Push", Style: { Destructive: "destructive" } };
-export const List = Object.assign(() => null, { Section: "Section", Item: "Item" });
+export const Color = { Green: "green" };
+export const ActionPanel = Object.assign(() => null, { Section: "ActionSection", Submenu: "ActionSubmenu" });
+export const Action = Object.assign(() => null, {
+  SubmitForm: "SubmitForm",
+  Push: "Push",
+  Open: "Open",
+  OpenInBrowser: "OpenInBrowser",
+  CopyToClipboard: "CopyToClipboard",
+  Style: { Destructive: "destructive" },
+});
+export const List = Object.assign(() => null, {
+  Section: "Section",
+  EmptyView: "EmptyView",
+  Item: Object.assign(() => null, {
+    Detail: Object.assign(() => null, { Metadata: Object.assign(() => null, { Label: "Label" }) }),
+  }),
+});
 export const Toast = { Style: { Failure: "failure", Success: "success" } };
 export const PopToRootType = { Immediate: "immediate" };
 export const showHUD = vi.fn();

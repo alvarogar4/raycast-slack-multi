@@ -9,15 +9,23 @@ import { handleError } from "./utils";
 
 const sharedPreferences = { cacheNamespace: "slack-conversation-list" };
 
-export function useConversationOptions(appFilter = true) {
+export function useConversationOptions() {
   const [sort, setSort] = useCachedState<ConversationSort>("conversation-list-sort", "latest", sharedPreferences);
   const [showApps, setShowApps] = useCachedState("conversation-list-show-apps", false, sharedPreferences);
   const { data: favorites, revalidate } = usePromise(readFavorites);
-  const actions = (id?: string) => (
+  const actions = (id?: string, messageSortMenu?: ReactNode) => (
     <ActionPanel.Section>
       {id && favorites && (
         <Action
-          title={favorites.has(id) ? "Remove from Favorites" : "Add to Favorites"}
+          title={
+            favorites.has(id)
+              ? messageSortMenu
+                ? "Remove Conversation from Favorites"
+                : "Remove from Favorites"
+              : messageSortMenu
+                ? "Add Conversation to Favorites"
+                : "Add to Favorites"
+          }
           icon={favorites.has(id) ? Icon.StarDisabled : Icon.Star}
           onAction={async () => {
             try {
@@ -29,25 +37,25 @@ export function useConversationOptions(appFilter = true) {
           }}
         />
       )}
-      <ActionPanel.Submenu title="Sort Conversations" icon={Icon.ArrowDown}>
-        <Action
-          title="Latest Received Message"
-          icon={sort === "latest" ? Icon.Checkmark : Icon.Clock}
-          onAction={() => setSort("latest")}
-        />
-        <Action
-          title="Name (A–Z)"
-          icon={sort === "name" ? Icon.Checkmark : Icon.Text}
-          onAction={() => setSort("name")}
-        />
-      </ActionPanel.Submenu>
-      {appFilter && (
-        <Action
-          title={showApps ? "Hide App Conversations" : "Show App Conversations"}
-          icon={Icon.AppWindow}
-          onAction={() => setShowApps(!showApps)}
-        />
+      {messageSortMenu ?? (
+        <ActionPanel.Submenu title="Sort Conversations" icon={Icon.ArrowDown}>
+          <Action
+            title="Latest Received Message"
+            icon={sort === "latest" ? Icon.Checkmark : Icon.Clock}
+            onAction={() => setSort("latest")}
+          />
+          <Action
+            title="Name (A–Z)"
+            icon={sort === "name" ? Icon.Checkmark : Icon.Text}
+            onAction={() => setSort("name")}
+          />
+        </ActionPanel.Submenu>
       )}
+      <Action
+        title={showApps ? "Hide App Conversations" : "Show App Conversations"}
+        icon={Icon.AppWindow}
+        onAction={() => setShowApps(!showApps)}
+      />
     </ActionPanel.Section>
   );
   return { sort, showApps, actions, favorites };
@@ -55,13 +63,12 @@ export function useConversationOptions(appFilter = true) {
 
 export type ConversationOptions = ReturnType<typeof useConversationOptions>;
 type ListRow = { id: string; element: ReactElement<List.Item.Props> };
-type ConversationRow = ConversationRank & ListRow;
-export interface ConversationRows {
-  rows: ConversationRow[];
-  notice?: ReactElement<List.Item.Props>;
+interface WorkspaceRows<TRow extends ListRow> {
+  rows: TRow[];
+  notices?: ListRow[];
   loading: boolean;
 }
-export type RenderRows = (source: ConversationRows) => ReactNode;
+export type RenderRows<TRow extends ListRow = ConversationRank & ListRow> = (source: WorkspaceRows<TRow>) => ReactNode;
 
 export function directorySelection(
   rows: ListRow[],
@@ -111,42 +118,58 @@ function DirectoryList({
 }) {
   const [chosen, choose] = useState<string | null>(null);
   const { items, hasChoice, selection } = directorySelection(rows, scope, chosen, choose);
-  if (chosen !== null && !hasChoice) choose(null);
+  if (chosen !== null && !hasChoice && (!loading || !chosen.startsWith(scope + "/"))) choose(null);
   return renderList(items.length ? items : empty, loading, selection);
 }
 
-// Each workspace owns its hooks and actions. Collect their current rows in the same render before sorting.
+// Each workspace owns its hooks and actions. Collect the current rows before ranking them together.
+export function combinedWorkspaceResults<TRow extends ListRow>(
+  workspaces: Workspace[],
+  query: string,
+  renderList: RenderWorkspaceList,
+  source: (workspace: Workspace, next: RenderRows<TRow>) => ReactNode,
+  order: (rows: TRow[]) => TRow[],
+  emptyView: (loading: boolean) => ReactNode,
+) {
+  function collect(index: number, sources: WorkspaceRows<TRow>[]): ReactNode {
+    const w = workspaces[index];
+    if (w)
+      return <Fragment key={workspaceKey(w)}>{source(w, (rows) => collect(index + 1, [...sources, rows]))}</Fragment>;
+    const results = order(sources.flatMap((s) => s.rows));
+    const rows = [...results, ...sources.flatMap((s) => s.notices ?? [])];
+    const loading = sources.some((s) => s.loading);
+    const scope = JSON.stringify([query, ...workspaces.map(workspaceKey)]);
+    return (
+      <DirectoryList
+        rows={rows}
+        scope={scope}
+        loading={loading}
+        empty={rows.length ? null : emptyView(loading)}
+        renderList={renderList}
+      />
+    );
+  }
+  return collect(0, []);
+}
+
 export function combinedConversations(
   workspaces: Workspace[],
   options: ConversationOptions,
   renderList: RenderWorkspaceList,
   source: (workspace: Workspace, next: RenderRows) => ReactNode,
-  directoryQuery?: string,
+  query: string,
 ) {
-  function collect(index: number, sources: ConversationRows[]): ReactNode {
-    const w = workspaces[index];
-    if (w)
-      return <Fragment key={workspaceKey(w)}>{source(w, (rows) => collect(index + 1, [...sources, rows]))}</Fragment>;
-    const rows = sources.flatMap((s) => s.rows).sort(compareConversations(options.sort));
-    const notices = sources.flatMap((s, i) =>
-      s.notice ? [{ id: s.notice.props.id ?? workspaceKey(workspaces[i]) + "/notice", element: s.notice }] : [],
-    );
-    const items = [...rows, ...notices];
-    const loading = sources.some((s) => s.loading);
-    const empty = (
+  return combinedWorkspaceResults(
+    workspaces,
+    query,
+    renderList,
+    source,
+    (rows) => rows.sort(compareConversations(options.sort)),
+    (loading) => (
       <List.EmptyView
         title={loading ? "Loading conversations…" : "No matching conversations"}
         actions={<ActionPanel>{options.actions()}</ActionPanel>}
       />
-    );
-    if (directoryQuery !== undefined) {
-      const scope = JSON.stringify([directoryQuery, ...workspaces.map(workspaceKey)]);
-      return <DirectoryList rows={items} {...{ scope, loading, empty, renderList }} />;
-    }
-    return renderList(
-      items.length ? items.map(({ id, element }) => <Fragment key={id}>{element}</Fragment>) : empty,
-      loading,
-    );
-  }
-  return collect(0, []);
+    ),
+  );
 }

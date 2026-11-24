@@ -225,11 +225,20 @@ const lookupDirectMessageProfile = withCache(
 
 export class SlackClient {
   public static async getUsers(): Promise<User[]> {
+    return (await SlackClient.getUsersWithApps()).users;
+  }
+
+  public static async getUsersWithApps() {
+    const apps = new Map([["USLACKBOT", "Slackbot"]]);
+    const imPeers = new Map<string, string>();
     const slackWebClient = getSlackWebClient();
     const users = await collectPaginatedResults({
       loadPage: async (cursor) => {
         const response = await slackWebClient.users.list({ team_id: getWorkspace().teamId, limit: pageSize, cursor });
-        return { items: response.members ?? [], nextCursor: response.response_metadata?.next_cursor };
+        const members = response.members ?? [];
+        for (const member of members)
+          if (member.id && isAppMember(member)) apps.set(member.id, memberDisplayName(member) ?? member.id);
+        return { items: members, nextCursor: response.response_metadata?.next_cursor };
       },
       transform: toUser,
       matches: () => true,
@@ -248,13 +257,14 @@ export class SlackClient {
         cursor,
       });
       for (const conversation of response.channels ?? []) {
+        if (conversation.id && conversation.user) imPeers.set(conversation.id, conversation.user);
         const user = conversation.user ? usersById.get(conversation.user) : undefined;
         if (user) user.conversationId = conversation.id;
       }
       cursor = response.response_metadata?.next_cursor || undefined;
     } while (cursor);
 
-    return users.sort((a, b) => sortNames(a.name, b.name));
+    return { users: users.sort((a, b) => sortNames(a.name, b.name)), usersById, apps, imPeers };
   }
 
   public static async getChannels(): Promise<Channel[]> {

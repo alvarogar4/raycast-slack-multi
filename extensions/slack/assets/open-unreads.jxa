@@ -1,0 +1,74 @@
+ObjC.import("AppKit");
+ObjC.import("CoreGraphics");
+
+// Resolve the letter in the active keyboard layout before posting the accelerator.
+function unreadsKeyCode(flags) {
+  for (let code = 0; code < 128; code++) {
+    const key = $.CGEventCreateKeyboardEvent(null, code, true);
+    $.CGEventSetFlags(key, flags);
+    const letter = $.NSEvent.eventWithCGEvent(key).charactersIgnoringModifiers.js;
+    if (typeof letter === "string" && letter.toLowerCase() === "a") return code;
+  }
+  return -1;
+}
+
+function focusedDocument(proc) {
+  let node = proc.attributes.byName("AXFocusedUIElement").value();
+  for (let depth = 0; node && depth < 35; depth++) {
+    if (node.role() === "AXWebArea") return node;
+    node = node.attributes.byName("AXParent").value();
+  }
+}
+
+function workspacePath(proc, base) {
+  const doc = focusedDocument(proc);
+  if (!doc) return undefined;
+  const url = String(doc.attributes.byName("AXURL").value()).split(/[?#]/)[0];
+  if (url === base || url.startsWith(base + "/")) return url.slice(base.length);
+}
+
+function run([teamId]) {
+  const base = "https://app.slack.com/client/" + teamId;
+  const events = Application("System Events");
+  const deadline = Date.now() + 6000;
+  let sent = false;
+  while (Date.now() < deadline) {
+    const app = $.NSWorkspace.sharedWorkspace.frontmostApplication;
+    if (app.bundleIdentifier.js === "com.tinyspeck.slackmacgap") {
+      const pid = app.processIdentifier;
+      const proc = events.applicationProcesses.whose({ unixId: pid })[0];
+      try {
+        const path = workspacePath(proc, base);
+        if (path !== undefined) {
+          const atRoot = path === "" || path === "/";
+          const view = String(proc.windows[0].name()).split(" - ")[0];
+          if (path === "/unreads" || path === "/unreads/" || (atRoot && view === "Unread Messages")) return "opened";
+          if (!sent) {
+            const flags = $.kCGEventFlagMaskCommand | $.kCGEventFlagMaskShift;
+            const code = unreadsKeyCode(flags);
+            if (code < 0) return "manual";
+            const keys = [true, false].map((down) => {
+              const key = $.CGEventCreateKeyboardEvent(null, code, down);
+              $.CGEventSetFlags(key, flags);
+              return key;
+            });
+            // A single Slack process hosts multiple workspaces. Check the active document again after resolving the shortcut.
+            if (
+              $.NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier !== pid ||
+              workspacePath(proc, base) === undefined
+            )
+              return "manual";
+            sent = true;
+            for (const key of keys) $.CGEventPostToPid(pid, key);
+          }
+        } else if (sent) {
+          return "manual";
+        }
+      } catch {
+        // Slack can replace the focused accessibility element while switching workspaces.
+      }
+    }
+    delay(0.15);
+  }
+  return "manual";
+}

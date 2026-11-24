@@ -1,9 +1,11 @@
-import { rm } from "node:fs/promises";
+import { runInNewContext } from "node:vm";
+import { readFile, rm } from "node:fs/promises";
 import { afterAll, expect, it, vi } from "vitest";
 import type { AdapterConfig } from "@slack/web-api/dist/WebClient";
 import { LaunchType, List } from "@raycast/api";
 import { createElement } from "react";
-import { environment, oauthTokens, OAuth, LocalStorage } from "./raycast";
+import SearchMessages, { openSearchMessage, searchMessagePages } from "../src/search-messages";
+import { environment, oauthTokens, OAuth, LocalStorage, getApplications, open, showHUD } from "./raycast";
 import {
   accounts,
   addWorkspace,
@@ -18,6 +20,8 @@ import SetStatus from "../src/set-status";
 import { favoriteId, readFavorites, saveFavorite } from "../src/shared/client/favorites";
 import { loadConversationActivity } from "../src/shared/client/conversationActivity";
 import { namedDirectoryRows } from "../src/search";
+import { orderMessageResults } from "../src/shared/client/conversationOrder";
+import OpenUnreadMessages from "../src/open-unread-messages";
 import { directorySelection } from "../src/shared/ConversationList";
 import send from "../src/tools/send-message";
 import getEmojis from "../src/tools/get-emojis";
@@ -33,7 +37,11 @@ import getHuddleLink from "../src/tools/get-huddle-link";
 import readResource from "../src/read-resource";
 import { SendMessage } from "../src/shared/SendMessage";
 
-const { browserLogin } = vi.hoisted(() => ({ browserLogin: vi.fn<() => Promise<string>>() }));
+const { browserLogin, readPromise, unreadMenu } = vi.hoisted(() => ({
+  browserLogin: vi.fn<() => Promise<string>>(),
+  readPromise: vi.fn(),
+  unreadMenu: vi.fn(),
+}));
 
 vi.mock("@raycast/utils", () => ({
   OAuthService: {
@@ -46,6 +54,10 @@ vi.mock("@raycast/utils", () => ({
     }),
   },
   withCache: (fn: unknown) => fn,
+  usePromise: readPromise,
+  runAppleScript: unreadMenu,
+  runPowerShellScript: unreadMenu,
+  useCachedState: (_key: string, initial: unknown) => [initial, vi.fn()],
   showFailureToast: vi.fn(),
   useCachedPromise: () => ({
     data: { status_text: "private cached text", status_emoji: ":private:", status_expiration: 123 },
@@ -73,6 +85,10 @@ vi.mock("@slack/web-api", async (importOriginal) => {
   };
 });
 
+let rejectOldSearch: () => void;
+const pendingGrant = new Promise<void>((resolve) => {
+  rejectOldSearch = resolve;
+});
 let directoryRecovered = false;
 let failReplyRefresh = false;
 const calls: { team: string; method: string }[] = [];
@@ -86,6 +102,11 @@ dispatch.mockImplementation(async (config) => {
   let data: Record<string, unknown> = { ok: true };
   switch (method) {
     case "search.messages": {
+      if (team === "TREVOKE" && args.get("query") === "old") {
+        await pendingGrant;
+        data = { ok: false, error: "token_revoked" };
+        break;
+      }
       const second = args.get("page") === "2";
       data = {
         ok: true,
@@ -278,6 +299,250 @@ dispatch.mockImplementation(async (config) => {
 
 afterAll(async () => {
   await rm(environment.supportPath, { recursive: true, force: true });
+});
+
+it("merges Slack message timestamps and relevance ranks from different workspaces", () => {
+  const a = { id: "a/C1/12.000001", timestamp: 12.000001, score: 4, position: 0 };
+  const b = { id: "b/C1/12.000002", timestamp: 12.000002, score: 6, position: 0 };
+  const c = { id: "a/C2/10", timestamp: 10, score: 5, position: 1 };
+  expect(orderMessageResults([a, c, b], "timestamp")).toEqual([b, a, c]);
+  expect(orderMessageResults([a, c, b], "score")).toEqual([b, c, a]);
+  const missing = { ...a, score: undefined };
+  expect(orderMessageResults([missing, c, b], "score")).toEqual([b, c, missing]);
+});
+
+it("renders mixed search results, keeps additional pages reachable, and isolates a failed workspace", () => {
+  const teams = ["A", "B"].map((name) => ({ teamId: "T" + name, teamName: name, userId: "U1", registration: name }));
+  let rejectFirst = false;
+  let directoryFailed = false;
+  let directoryRevoked = false;
+  let appsOnly = false;
+  const loadMore = vi.fn();
+  const retryMembers = vi.fn();
+  const channel = { id: "C1", name: "general" };
+  const app = { id: "D1", is_im: true, user: "UBOT" };
+  readPromise.mockImplementation((fn, args) => {
+    if (!args) return { data: new Set() };
+    const [w, query, sort] = args;
+    if (fn !== searchMessagePages)
+      return directoryFailed
+        ? {
+            error: directoryRevoked ? { data: { error: "invalid_auth" } } : new Error("temporarily unavailable"),
+            revalidate: retryMembers,
+          }
+        : {
+            data: {
+              users: [],
+              usersById: new Map(),
+              apps: new Map([["UBOT", "Bot"]]),
+              imPeers: new Map([["D1", "UBOT"]]),
+            },
+          };
+    const matches =
+      w.teamId === "TA"
+        ? [
+            { channel, text: "newest", ts: "30.000001" },
+            { channel: app, text: "hidden app", ts: "50" },
+            { channel, text: "oldest", ts: "10" },
+          ]
+        : [{ channel, text: "middle", ts: "20" }];
+    return {
+      data: [
+        {
+          workspace: workspaceKey(w),
+          hasMore: w.teamId === "TA",
+          query,
+          sort,
+          matches: appsOnly && w.teamId === "TA" ? matches.filter((m) => m.channel.id === "D1") : matches,
+        },
+      ],
+      error: rejectFirst && w.teamId === "TA" ? new Error("invalid_auth") : undefined,
+      pagination: { hasMore: false, onLoadMore: loadMore },
+    };
+  });
+  const elements = () => {
+    const merged = SearchMessages().props.merged(teams, "query", (rows: unknown) => rows, vi.fn());
+    const first = merged.type(merged.props).props.children;
+    const second = first.type(first.props).props.children;
+    const list = second.type(second.props);
+    return list.type(list.props);
+  };
+  const render = () => elements().map((item: ReturnType<typeof createElement<List.Item.Props>>) => item.props.title);
+  const more = elements().at(-1).props.actions.props.children[0].props.onAction;
+  more();
+  more();
+  expect(loadMore).toHaveBeenCalledTimes(1);
+  expect(render()).toEqual(["newest", "middle", "oldest", "Load more messages"]);
+  appsOnly = true;
+  expect(render()).toEqual(["middle", "Load more messages"]);
+  appsOnly = false;
+  rejectFirst = true;
+  expect(render()).toEqual(["middle", "Could not search messages"]);
+  rejectFirst = false;
+  directoryFailed = true;
+  expect(render()).toEqual([
+    "newest",
+    "middle",
+    "oldest",
+    "Could not load direct message profiles",
+    "Load more messages",
+  ]);
+  directoryRevoked = true;
+  expect(render()).toEqual([
+    "Reconnect this workspace to search messages",
+    "Reconnect this workspace to search messages",
+  ]);
+  readPromise.mockReset();
+});
+
+it("requests the next Slack page in the original workspace", async () => {
+  const w = await addWorkspace("xoxp-fixture-TPAGEUI");
+  const load = searchMessagePages(w, "query", "timestamp");
+  const first = await load({ page: 0 });
+  const second = await load({ page: 1 });
+  expect(first.hasMore).toBe(true);
+  expect(second.hasMore).toBe(false);
+  expect(first.data[0].workspace).toBe(workspaceKey(w));
+  expect(second.data[0].matches[0].channel?.id).toBe("C2");
+});
+
+it("reports a late rejection to the owning workspace after its newer query succeeds", async () => {
+  const w = await addWorkspace("xoxp-fixture-TREVOKE");
+  const rejected = vi.fn();
+  const old = searchMessagePages(w, "old", "timestamp", rejected)({ page: 1 });
+  await searchMessagePages(w, "new", "timestamp", rejected)({ page: 0 });
+  expect(rejected).not.toHaveBeenCalled();
+  rejectOldSearch();
+  await expect(old).rejects.toThrow("token_revoked");
+  expect(rejected).toHaveBeenCalledOnce();
+});
+
+it("opens search matches in Slack and resolves a missing browser permalink in the originating workspace", async () => {
+  const w = await addWorkspace("xoxp-fixture-TOPENMSG");
+  getApplications.mockResolvedValue([{ name: "Slack", path: "/Applications/Slack.app" }]);
+  await openSearchMessage(
+    w,
+    "123.000045",
+    "C1",
+    "https://example.slack.com/archives/C1/p123000045?thread_ts=120.000001",
+  );
+  expect(open).toHaveBeenLastCalledWith("slack://channel?team=TOPENMSG&id=C1&message=123.000045&thread_ts=120.000001");
+  getApplications.mockResolvedValue([]);
+  open.mockRejectedValueOnce(new Error("No handler for slack://"));
+  await openSearchMessage(w, "123.000045", "C1");
+  expect(calls.filter((call) => call.team === w.teamId && call.method === "chat.getPermalink")).toHaveLength(1);
+  expect(open).toHaveBeenLastCalledWith("https://example.slack.com/archives/CSHARED001/p2100");
+});
+
+it("sends the Mac Unreads shortcut only to the chosen Slack process and checks the resulting view", async () => {
+  const script = await readFile(new URL("../assets/open-unreads.jxa", import.meta.url), "utf8");
+  const base = "https://app.slack.com/client/TSELECTED";
+  function navigate(urls: string[], switchesToUnreads: boolean, switchBeforeDispatch = false) {
+    let time = 0;
+    let step = 0;
+    let windowTitle = "Threads - Workspace - Slack";
+    const post = vi.fn((_pid: number, event: { code: number; down: boolean }) => {
+      if (!event.down && switchesToUnreads) windowTitle = "Unread Messages - Workspace - Slack";
+    });
+    let reads = 0;
+    const webArea = {
+      role: () => "AXWebArea",
+      attributes: {
+        byName: () => ({
+          value: () =>
+            switchBeforeDispatch && ++reads > 1 ? base + "OTHER/C1" : urls[Math.min(step, urls.length - 1)],
+        }),
+      },
+    };
+    const proc = {
+      attributes: { byName: () => ({ value: () => webArea }) },
+      windows: [{ name: () => windowTitle }],
+    };
+    const result = runInNewContext(script + "\nrun(['TSELECTED'])", {
+      ObjC: { import: vi.fn() },
+      Application: () => ({ applicationProcesses: { whose: () => [proc] } }),
+      Date: { now: () => time },
+      delay: () => {
+        step++;
+        time += 1000;
+      },
+      $: {
+        NSWorkspace: {
+          sharedWorkspace: {
+            frontmostApplication: { bundleIdentifier: { js: "com.tinyspeck.slackmacgap" }, processIdentifier: 42 },
+          },
+        },
+        NSEvent: {
+          eventWithCGEvent: ({ code }: { code: number }) => ({
+            charactersIgnoringModifiers: { js: code === 12 ? "A" : "Q" },
+          }),
+        },
+        CGEventCreateKeyboardEvent: (_source: unknown, code: number, down: boolean) => ({ code, down }),
+        CGEventSetFlags: vi.fn(),
+        CGEventPostToPid: post,
+        kCGEventFlagMaskCommand: 1048576,
+        kCGEventFlagMaskShift: 131072,
+      },
+    });
+    return { result, post };
+  }
+  const wrong = navigate([base + "OTHER/C1"], true);
+  expect(wrong.result).toBe("manual");
+  expect(wrong.post).not.toHaveBeenCalled();
+  const interrupted = navigate([base], true, true);
+  expect(interrupted.result).toBe("manual");
+  expect(interrupted.post).not.toHaveBeenCalled();
+  const switched = navigate([base + "OTHER/C1", base], true);
+  expect(switched.result).toBe("opened");
+  expect(switched.post.mock.calls).toEqual([
+    [42, { code: 12, down: true }],
+    [42, { code: 12, down: false }],
+  ]);
+  const ignored = navigate([base], false);
+  expect(ignored.result).toBe("manual");
+  expect(ignored.post).toHaveBeenCalledTimes(2);
+});
+
+it("asks for a workspace and opens its Unreads in the installed app, including on menu failure", async () => {
+  unreadMenu.mockResolvedValue("opened");
+  getApplications.mockResolvedValue([{ name: "Slack", path: "/Applications/Slack.app" }]);
+  const workspaces = ["TFIRST", "TSECOND"].map((teamId) => ({
+    teamId,
+    teamName: "Shared name",
+    registration: teamId,
+    userId: "U1",
+  }));
+  const command = OpenUnreadMessages();
+  for (const teams of [workspaces, workspaces.slice(1)]) {
+    readPromise.mockReturnValue({ data: teams });
+    const list = command.type(command.props);
+    expect(list.props.navigationTitle).toBe("Choose Workspace");
+    const items = list.props.children;
+    expect(items.map((item: ReturnType<typeof createElement<List.Item.Props>>) => item.props.id)).toEqual(
+      teams.map((w) => w.teamId),
+    );
+    for (const [index, team] of teams.entries()) {
+      const item = items[index];
+      expect(item.props.subtitle).toBe(teams.length > 1 ? team.teamId : undefined);
+      await item.props.actions.props.children.props.onAction();
+      expect(open).toHaveBeenLastCalledWith("slack://open?team=" + team.teamId);
+      expect(unreadMenu).toHaveBeenCalled();
+    }
+  }
+  const action = command.props.action(workspaces[1]).props.onAction;
+  unreadMenu.mockRejectedValueOnce(new Error("unavailable"));
+  open.mockClear();
+  await action();
+  expect(open).toHaveBeenCalledExactlyOnceWith("slack://open?team=TSECOND");
+  expect(showHUD).toHaveBeenLastCalledWith(expect.stringContaining("Shared name"));
+  getApplications.mockResolvedValue([]);
+  open.mockClear();
+  unreadMenu.mockClear();
+  open.mockRejectedValueOnce(new Error("No handler for slack://"));
+  await action();
+  expect(open.mock.calls).toEqual([["slack://open?team=TSECOND"], ["https://app.slack.com/client/TSECOND/unreads"]]);
+  expect(unreadMenu).not.toHaveBeenCalled();
+  readPromise.mockReset();
 });
 
 function picker(ids: string[], chosen: string | null, choose: (id: string | null) => void, scope = "all") {
@@ -568,6 +833,11 @@ it("names DMs beyond the people limit and keeps the same user ID separate in eac
         { id: "U00000101", name: "Late Member " + team, conversationId: "D00000001" },
       ]);
       expect(calls.filter((call) => call.team === team && call.method === "users.list")).toHaveLength(2);
+      const directory = await SlackClient.getUsersWithApps();
+      expect(directory.imPeers.get("D00000002")).toBe("UBOT00101");
+      expect(directory.apps.get("UBOT00101")).toBe("Support Bot");
+      expect(directory.usersById.has("UBOT00101")).toBe(false);
+      expect(directory.usersById.has(directory.imPeers.get("D00000001")!)).toBe(true);
     });
   }
 });

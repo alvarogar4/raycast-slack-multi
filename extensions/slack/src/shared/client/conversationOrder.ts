@@ -27,3 +27,24 @@ export function incomingTimestamp(
   const ts = Number(message.ts);
   return Number.isFinite(ts) && ts > 0 ? ts : 0;
 }
+
+export type MessageSort = "timestamp" | "score";
+
+export interface MessageRank {
+  id: string;
+  timestamp: number;
+  score: number | undefined;
+  position: number;
+}
+
+export function orderMessageResults<TRow extends MessageRank>(rows: TRow[], sort: MessageSort) {
+  return rows.sort((a, b) => {
+    if (sort === "score") {
+      const scoreA = typeof a.score === "number" && Number.isFinite(a.score) ? a.score : -Infinity;
+      const scoreB = typeof b.score === "number" && Number.isFinite(b.score) ? b.score : -Infinity;
+      if (scoreA !== scoreB) return scoreB - scoreA;
+      if (a.position !== b.position) return a.position - b.position;
+    }
+    return b.timestamp - a.timestamp || a.id.localeCompare(b.id);
+  });
+}

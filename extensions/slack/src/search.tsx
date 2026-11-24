@@ -432,26 +432,34 @@ function DirectoryRows({
   return children({
     rows,
     loading,
-    notice:
-      error || activityError ? (
-        <List.Item
-          id={workspaceKey(workspace) + (error ? "/retry-directory" : "/refresh-activity")}
-          title={error ? "Could not load the full directory" : "Some conversations have limited message history"}
-          accessories={[{ tag: workspace.teamName }]}
-          actions={
-            <ActionPanel>
-              <Action
-                title={error ? "Retry" : "Refresh Message Dates"}
-                onAction={() => {
-                  if (error) retry();
-                  if (options.sort === "latest") void activity.revalidate();
-                }}
-              />
-              {options.actions()}
-            </ActionPanel>
-          }
-        />
-      ) : undefined,
+    notices:
+      error || activityError
+        ? [
+            {
+              id: workspaceKey(workspace) + (error ? "/retry-directory" : "/refresh-activity"),
+              element: (
+                <List.Item
+                  title={
+                    error ? "Could not load the full directory" : "Some conversations have limited message history"
+                  }
+                  accessories={[{ tag: workspace.teamName }]}
+                  actions={
+                    <ActionPanel>
+                      <Action
+                        title={error ? "Retry" : "Refresh Message Dates"}
+                        onAction={() => {
+                          if (error) retry();
+                          if (options.sort === "latest") void activity.revalidate();
+                        }}
+                      />
+                      {options.actions()}
+                    </ActionPanel>
+                  }
+                />
+              ),
+            },
+          ]
+        : [],
   });
 }
 

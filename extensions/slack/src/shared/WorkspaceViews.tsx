@@ -1,8 +1,8 @@
 import { Action, ActionPanel, Detail, environment, Icon, List, launchCommand, LaunchType } from "@raycast/api";
 import { useCachedState, usePromise } from "@raycast/utils";
-import { Fragment, type ReactNode, useState } from "react";
+import { type ReactNode, useState } from "react";
 import { accounts, inWorkspace } from "./client/WebClient";
-import { selectedWorkspaces, type Workspace, workspaceKey } from "./client/workspaces";
+import { selectedWorkspaces, type Workspace } from "./client/workspaces";
 
 function Setup({ loading }: { loading: boolean }) {
   return (
@@ -34,13 +34,16 @@ export type RenderWorkspaceList = (
 ) => ReactNode;
 
 export function WorkspaceList({
-  children,
   detail,
   merged,
   placeholder,
 }: {
-  children?: (workspace: Workspace, query: string, setQuery: (s: string) => void) => ReactNode;
-  merged?: (workspaces: Workspace[], query: string, renderList: RenderWorkspaceList) => ReactNode;
+  merged: (
+    workspaces: Workspace[],
+    query: string,
+    renderList: RenderWorkspaceList,
+    searchWorkspace: (w: Workspace, text: string) => void,
+  ) => ReactNode;
   detail?: boolean;
   placeholder: string;
 }) {
@@ -71,32 +74,23 @@ export function WorkspaceList({
       {rows}
     </List>
   );
-  const selected = selectedWorkspaces(data, value);
-  if (merged) return merged(selected, query, renderList);
-  return renderList(
-    selected.map((w) => (
-      <Fragment key={workspaceKey(w)}>
-        {children?.(w, query, (text) => {
-          setFilter(w.teamId);
-          setQuery(text);
-        })}
-      </Fragment>
-    )),
-    false,
-  );
+  return merged(selectedWorkspaces(data, value), query, renderList, (w, text) => {
+    setFilter(w.teamId);
+    setQuery(text);
+  });
 }
 
 export function WorkspaceTarget({
   children,
   allowAll = false,
-}: {
-  children: (targets: Workspace[]) => ReactNode;
-  allowAll?: boolean;
-}) {
+  action,
+}:
+  | { children: (targets: Workspace[]) => ReactNode; allowAll?: boolean; action?: never }
+  | { action: (workspace: Workspace) => ReactNode; children?: never; allowAll?: false }) {
   const { data, isLoading } = usePromise(accounts.list);
   const [last, remember] = useCachedState(environment.commandName + "-target", "all");
   if (!data?.length) return <Setup loading={isLoading} />;
-  if (data.length === 1) return <>{children(data)}</>;
+  if (data.length === 1 && children) return <>{children(data)}</>;
   const choices = [
     ...(allowAll ? [{ id: "all", name: "All Workspaces", targets: data }] : []),
     ...data.map((w) => ({ id: w.teamId, name: w.teamName, targets: [w] })),
@@ -114,10 +108,12 @@ export function WorkspaceTarget({
           key={id}
           id={id}
           title={name}
+          subtitle={choices.some((choice) => choice.id !== id && choice.name === name) ? id : undefined}
+          keywords={[id]}
           icon={Icon.Building}
           actions={
             <ActionPanel>
-              <Action.Push title="Choose Workspace" target={<>{children(targets)}</>} />
+              {action ? action(targets[0]) : <Action.Push title="Choose Workspace" target={<>{children(targets)}</>} />}
             </ActionPanel>
           }
         />

@@ -9,6 +9,25 @@ import { shouldOpenInSlack } from "./client/navigation";
 // Let the OS forward the URI to its registered handler, including nonstandard Slack installs.
 const slackAppOpenProps = { icon: "slack-icon-rounded.png" } as const;
 
+// Prefer the registered Slack handler, including installations Raycast cannot enumerate.
+export async function openSlackLink(native: string | undefined, webLink: () => Promise<string | undefined>) {
+  if (native) {
+    try {
+      await open(native);
+      return true;
+    } catch (error) {
+      if (await shouldOpenInSlack("auto", getApplications)) throw error;
+    }
+  } else if (await shouldOpenInSlack("auto", getApplications)) {
+    throw new Error("Slack did not provide a desktop link for this message.");
+  }
+
+  const link = await webLink();
+  if (!link) throw new Error("Slack did not provide a browser link.");
+  await open(link);
+  return false;
+}
+
 export const useSlackApp = () => {
   const { openLinksIn = "auto" } = getPreferenceValues<Preferences>();
   const [state, set] = useState<{ isAppInstalled: boolean; isLoading: boolean }>({

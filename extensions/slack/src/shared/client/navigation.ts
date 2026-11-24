@@ -22,3 +22,13 @@ export async function shouldOpenInSlack(
     return true;
   }
 }
+
+export function nativeMessageLink(teamId: string, timestamp: string, channelId?: string, permalink?: string) {
+  const link = permalink && URL.canParse(permalink) ? new URL(permalink) : undefined;
+  const channel = channelId || link?.pathname.match(/^\/archives\/([CDG][A-Z0-9]+)\//)?.[1];
+  if (!channel) return undefined;
+  const params = new URLSearchParams({ team: teamId, id: channel, message: timestamp });
+  const thread = link?.searchParams.get("thread_ts");
+  if (thread) params.set("thread_ts", thread);
+  return "slack://channel?" + params;
+}

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { isSlackApplication, shouldOpenInSlack } from "./navigation";
+import { isSlackApplication, nativeMessageLink, shouldOpenInSlack } from "./navigation";
 import { getConversationTeamId } from "./conversation";
 
 test("recognizes Slack by bundle ID, Windows executable, and renamed macOS app", () => {
@@ -33,4 +33,18 @@ test("Slack Connect links use the context workspace ahead of the shared channel 
     "TLOCAL",
   );
   assert.equal(getConversationTeamId({ internal_team_ids: ["TLOCAL"] }), "TLOCAL");
+});
+
+test("desktop message links keep the selected workspace, exact timestamp, and thread context", () => {
+  assert.equal(nativeMessageLink("TLOCAL", "123.000045", "C1"), "slack://channel?team=TLOCAL&id=C1&message=123.000045");
+  assert.equal(
+    nativeMessageLink(
+      "TLOCAL",
+      "123.000045",
+      undefined,
+      "https://test.slack.com/archives/C1/p123000045?thread_ts=122.000010&cid=C1",
+    ),
+    "slack://channel?team=TLOCAL&id=C1&message=123.000045&thread_ts=122.000010",
+  );
+  assert.equal(nativeMessageLink("TLOCAL", "123.000045", undefined, "invalid"), undefined);
 });
