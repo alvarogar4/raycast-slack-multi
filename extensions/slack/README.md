@@ -19,6 +19,8 @@ Run **Connect with Slack** in Raycast, or open the [command link](raycast://exte
 
 **Open Channel** lists available public channels, private channels you belong to, group conversations, and DMs, excluding archived conversations. Public channels you can browse before joining carry a **Not joined** label. **Join Channel** explicitly joins one. **Send Message** lets you pick a recipient from any connected workspace, then shows the recipient and workspace in the composer. [Slack conversation listing](https://docs.slack.dev/reference/methods/conversations.list/)
 
+**Open Channel**, **Send Message**, and **Unread Messages** mix conversations from the selected workspaces by latest received message. Conversations with no known message date appear after dated conversations. For large workspaces, reopening the directory checks more history. Use **Actions → Sort Conversations** to switch to alphabetical order. **Add to Favorites** pins a conversation above the other results in all three commands. App and bot DMs are hidden from the directory by default. Use **Show App Conversations** to include them.
+
 In **Unread Messages**, use **Configure** on each workspace to select up to 30 conversations to follow. **Set Status**, **Set Presence**, and **Set Snooze** let you choose one workspace or apply the change to all. AI tools accept a workspace ID or unique workspace name. Include it when sending a message, replying to a thread, or uploading a file.
 
 ## Opening channels and direct messages

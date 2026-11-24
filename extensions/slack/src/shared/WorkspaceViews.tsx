@@ -27,12 +27,16 @@ function Setup({ loading }: { loading: boolean }) {
   );
 }
 
+export type RenderWorkspaceList = (rows: ReactNode, loading: boolean) => ReactNode;
+
 export function WorkspaceList({
   children,
   detail,
+  merged,
   placeholder,
 }: {
-  children: (workspace: Workspace, query: string, setQuery: (s: string) => void) => ReactNode;
+  children?: (workspace: Workspace, query: string, setQuery: (s: string) => void) => ReactNode;
+  merged?: (workspaces: Workspace[], query: string, renderList: RenderWorkspaceList) => ReactNode;
   detail?: boolean;
   placeholder: string;
 }) {
@@ -41,8 +45,9 @@ export function WorkspaceList({
   const [query, setQuery] = useState("");
   if (!data?.length) return <Setup loading={isLoading} />;
   const value = data.some((w) => w.teamId === filter) ? filter : "all";
-  return (
+  const renderList: RenderWorkspaceList = (rows, loading) => (
     <List
+      isLoading={loading}
       filtering={false}
       throttle
       searchText={query}
@@ -58,15 +63,21 @@ export function WorkspaceList({
         </List.Dropdown>
       }
     >
-      {selectedWorkspaces(data, value).map((w) => (
-        <Fragment key={workspaceKey(w)}>
-          {children(w, query, (text) => {
-            setFilter(w.teamId);
-            setQuery(text);
-          })}
-        </Fragment>
-      ))}
+      {rows}
     </List>
+  );
+  const selected = selectedWorkspaces(data, value);
+  if (merged) return merged(selected, query, renderList);
+  return renderList(
+    selected.map((w) => (
+      <Fragment key={workspaceKey(w)}>
+        {children?.(w, query, (text) => {
+          setFilter(w.teamId);
+          setQuery(text);
+        })}
+      </Fragment>
+    )),
+    false,
   );
 }
 

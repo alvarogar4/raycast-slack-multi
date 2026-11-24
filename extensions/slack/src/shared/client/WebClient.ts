@@ -115,6 +115,20 @@ function createSession(workspace: Workspace, token: string) {
   return {
     workspace,
     client: createClient(token, { teamId: workspace.teamId, requestInterceptor }),
+    // Background ordering must never pause an interactive write behind Slack's rate-limit retry queue.
+    activityClient: (signal?: AbortSignal) =>
+      createClient(token, {
+        teamId: workspace.teamId,
+        requestInterceptor: async (config) => {
+          const authorized = await requestInterceptor(config);
+          signal?.throwIfAborted();
+          if (signal) authorized.signal = signal;
+          return authorized;
+        },
+        timeout: 6000,
+        rejectRateLimitedCalls: true,
+        retryConfig: { retries: 0 },
+      }),
     canvas: createCanvasClient(token, getProxyAgent(), requestInterceptor),
   };
 }
@@ -138,6 +152,7 @@ function active() {
   return session;
 }
 export const getSlackWebClient = () => active().client;
+export const getActivityClient = (signal?: AbortSignal) => active().activityClient(signal);
 export const getCanvasWebClient = () => active().canvas;
 export const getSlackToken = () => workspaceToken(active().workspace);
 export const getWorkspace = () => active().workspace;

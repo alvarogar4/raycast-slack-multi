@@ -22,6 +22,8 @@ export interface SlackMember {
   name?: string;
   real_name?: string;
   profile?: {
+    bot_id?: string;
+    api_app_id?: string;
     real_name?: string;
     display_name?: string;
     email?: string;
@@ -36,6 +38,7 @@ export interface SlackMember {
   };
   tz?: string;
   deleted?: boolean;
+  is_app_user?: boolean;
   is_bot?: boolean;
   is_workflow_bot?: boolean;
 }

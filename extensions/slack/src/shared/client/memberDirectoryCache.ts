@@ -8,6 +8,16 @@ type Snapshot = { savedAt: number; members: SlackMember[]; pages?: SlackMember[]
 
 const cache = new Cache({ capacity: 20 * 1024 * 1024 });
 const memory = new Map<string, Snapshot>();
+const listeners = new Set<() => void>();
+export function subscribeMemberDirectory(listener: () => void) {
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+  };
+}
+export function memberDirectoryRevision(accountKey: string) {
+  return memory.get("member-directory-v3:" + accountKey)?.savedAt ?? 0;
+}
 
 /** Keeps the profile fields used by the directory, including names of existing DM partners. */
 export function slimMember(member: SlackMember): SlackMember | undefined {
@@ -24,6 +34,8 @@ export function slimMember(member: SlackMember): SlackMember | undefined {
     tz: member.tz,
     profile: profile && {
       real_name: profile.real_name,
+      bot_id: profile.bot_id,
+      api_app_id: profile.api_app_id,
       display_name: profile.display_name,
       email: profile.email,
       first_name: profile.first_name,
@@ -54,6 +66,7 @@ function read(key: string): Snapshot | undefined {
 function write(key: string, pages: SlackMember[][]) {
   const snapshot = { savedAt: Date.now(), members: pages.flat() };
   memory.set(key, { ...snapshot, pages });
+  listeners.forEach((notify) => notify());
   try {
     cache.set(key, JSON.stringify(snapshot));
   } catch {
@@ -122,7 +135,7 @@ async function readLoadPage(load: Load, index: number): Promise<MemberPage> {
 }
 
 export function clearFailedMemberLoad(accountKey: string) {
-  const key = "member-directory-v2:" + accountKey;
+  const key = "member-directory-v3:" + accountKey;
   if (loads.get(key)?.failedAt !== undefined) loads.delete(key);
 }
 
@@ -136,7 +149,7 @@ export type MemberPage = { items: SlackMember[]; hasMore: boolean; error?: unkno
  * Only a complete scan is cached.
  */
 export async function getMemberPage(accountKey: string, fetchPage: FetchPage, index: number): Promise<MemberPage> {
-  const key = "member-directory-v2:" + accountKey;
+  const key = "member-directory-v3:" + accountKey;
   const snapshot = read(key);
   const now = Date.now();
   const age = snapshot ? now - snapshot.savedAt : Infinity;

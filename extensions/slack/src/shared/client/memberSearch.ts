@@ -41,6 +41,18 @@ class Matches<T> {
   }
 }
 
+export function memberSearchFields(member: SlackMember, displayName: string) {
+  return [
+    displayName,
+    member.name,
+    member.real_name,
+    member.profile?.display_name,
+    member.profile?.real_name,
+    member.profile?.email,
+    member.profile?.title,
+  ];
+}
+
 /** One scan retains at most maxResults users and maxResults compact names per distinct query word. */
 export async function searchMemberDirectory<User>({
   query,
@@ -89,15 +101,7 @@ export async function searchMemberDirectory<User>({
     for (const member of page.items) {
       const name = toUserName(member);
       if (!name) continue;
-      const searchable = [
-        name[1],
-        member.name,
-        member.real_name,
-        member.profile?.display_name,
-        member.profile?.real_name,
-        member.profile?.email,
-        member.profile?.title,
-      ];
+      const searchable = memberSearchFields(member, name[1]);
       if (toUser && matchesAllWords(searchable, query)) {
         const user = toUser(member);
         if (user) users.add(user, matchesVisibleName(name[1], query));

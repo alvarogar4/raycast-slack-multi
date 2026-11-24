@@ -1,5 +1,6 @@
 import { Icon, Image } from "@raycast/api";
 import { withCache } from "@raycast/utils";
+import { incomingTimestamp } from "./conversationOrder";
 import { memberDirectoryFreshMs } from "./memberDirectoryRefresh";
 import { handleError } from "../utils";
 import { getWorkspace, getSlackWebClient, inWorkspace } from "./WebClient";
@@ -12,8 +13,8 @@ import { getDirectorySearchPageSize } from "./directory";
 import { searchConversationDirectory, searchUserNames } from "./conversationSearch";
 import { directoryConversation, toChannel, toGroup } from "./conversation";
 import type { Channel, Group } from "./conversation";
-import { isMemberDirectoryScanError, searchMemberDirectory } from "./memberSearch";
-import { memberDisplayName, toUserName } from "./member";
+import { isMemberDirectoryScanError, memberSearchFields, searchMemberDirectory } from "./memberSearch";
+import { isAppMember, memberDisplayName, toUserName } from "./member";
 import { getMemberPage } from "./memberDirectoryCache";
 import { getConversationPage, getMemberChannelPage } from "./channelDirectoryCache";
 import type { ConversationPage, ConversationPageOptions } from "./channelDirectoryCache";
@@ -44,13 +45,24 @@ export interface SnoozeStatus {
   snoozeEnd: Date | undefined;
 }
 
+export type FavoriteUser = User & { searchFields: Array<string | undefined> };
+
+export interface DirectMessageProfiles {
+  names: ReadonlyMap<string, string>;
+  apps: ReadonlySet<string>;
+  inactive: ReadonlySet<string>;
+  favoriteUsers: FavoriteUser[];
+}
+
 export interface Message {
   receivedAt: Date;
   message: string;
   senderId: string;
+  incoming?: boolean;
 }
 export interface UnreadChannelInfo {
   conversationId: string;
+  directUserId?: string;
   messageHistory: Message[];
 }
 
@@ -136,8 +148,11 @@ function toConversationCursorPage(page: ConversationPage, index: number) {
  * Channel pages come from a shared, cached conversations.list scan. The cursor is the page index, so a search can
  * filter locally as pages arrive instead of restarting a full directory walk on each keystroke.
  */
-export async function loadConversationDirectoryPage(cursor?: string, options?: ConversationPageOptions) {
-  const slackWebClient = getSlackWebClient();
+export async function loadConversationDirectoryPage(
+  cursor?: string,
+  options?: ConversationPageOptions,
+  slackWebClient = getSlackWebClient(),
+) {
   const index = Number(cursor ?? 0);
   const page = await getConversationPage(
     workspaceKey(getWorkspace()),
@@ -185,12 +200,14 @@ export async function loadMemberChannelDirectoryPage(cursor?: string) {
 }
 
 // Some Slack Connect peers are visible in DMs but absent from this workspace's users.list.
-const lookupDirectMessageName = withCache(
+const lookupDirectMessageProfile = withCache(
   async (workspace: Workspace, user: string) =>
     inWorkspace(workspace, async () => {
       try {
         const { user: member } = await getSlackWebClient().users.info({ user });
-        return member?.id === user ? (memberDisplayName(member) ?? null) : null;
+        return member?.id === user
+          ? { name: memberDisplayName(member), app: isAppMember(member), inactive: !!member.deleted }
+          : null;
       } catch (error) {
         const code = (error as { data?: { error?: string } })?.data?.error;
         if (
@@ -291,11 +308,22 @@ export class SlackClient {
     return groups.sort((a, b) => sortNames(a.name, b.name));
   }
 
-  public static async getDirectMessageNames(
+  public static async getDirectMessageProfiles(
     signal: AbortSignal | undefined,
-    onPage: (names: ReadonlyMap<string, string>) => void,
+    onPage: (profiles: DirectMessageProfiles) => void,
+    favoritePeers: readonly string[] = [],
   ) {
     const names = new Map<string, string>();
+    const apps = new Set(["USLACKBOT"]);
+    const inactive = new Set<string>();
+    const favoriteIds = new Set(favoritePeers);
+    const favoriteUsers: FavoriteUser[] = [];
+    const snapshot = () => ({
+      names: new Map(names),
+      apps: new Set(apps),
+      inactive: new Set(inactive),
+      favoriteUsers: [...favoriteUsers],
+    });
     const load = createMemberPageLoader();
     let cursor: string | undefined;
     do {
@@ -305,12 +333,18 @@ export class SlackClient {
       for (const member of page.items) {
         const name = memberDisplayName(member);
         if (member.id && name) names.set(member.id, name);
+        if (member.id && favoriteIds.has(member.id)) {
+          const user = toUser(member);
+          if (user) favoriteUsers.push({ ...user, searchFields: memberSearchFields(member, user.name) });
+        }
+        if (member.id && member.deleted) inactive.add(member.id);
+        if (member.id && isAppMember(member)) apps.add(member.id);
       }
       cursor = page.nextCursor;
-      if (cursor || page.error) onPage(new Map(names));
+      if (cursor || page.error) onPage(snapshot());
       if (page.error) throw page.error;
     } while (cursor);
-    onPage(new Map(names));
+    onPage(snapshot());
     const visited = new Set<string>();
     do {
       signal?.throwIfAborted();
@@ -319,17 +353,19 @@ export class SlackClient {
         signal?.throwIfAborted();
         if (!dm.is_im || !dm.user || names.has(dm.user) || visited.has(dm.user)) continue;
         visited.add(dm.user);
-        const name = await lookupDirectMessageName(getWorkspace(), dm.user);
+        const profile = await lookupDirectMessageProfile(getWorkspace(), dm.user);
         signal?.throwIfAborted();
-        if (name) {
-          names.set(dm.user, name);
-          onPage(new Map(names));
+        if (profile) {
+          if (profile.name) names.set(dm.user, profile.name);
+          if (profile.app) apps.add(dm.user);
+          if (profile.inactive) inactive.add(dm.user);
+          onPage(snapshot());
         }
       }
       if (page.error) throw page.error;
       cursor = page.nextCursor;
     } while (cursor);
-    return names;
+    return snapshot();
   }
 
   public static async searchUsers(query: string, signal?: AbortSignal): Promise<User[]> {
@@ -457,31 +493,32 @@ export class SlackClient {
         const info = await slackWebClient.conversations.info({ channel: id });
         const oldest = info.channel?.last_read;
         if (!oldest || !/^\d+(\.\d+)?$/.test(oldest)) throw new Error("Conversation read marker is unavailable");
-        return slackWebClient.conversations.history({
-          channel: id,
-          oldest,
+        const { messages } = await slackWebClient.conversations.history({ channel: id, oldest });
+        const messageHistory: Message[] = (messages ?? []).flatMap((m) => {
+          const text =
+            m.text && m.text !== "This content can't be displayed."
+              ? m.text
+              : m.blocks?.map((block) => block.text?.text).join("\n\n\n\n\n\n\n\n");
+          const senderId = m.user ?? m.bot_id;
+          if (!m.ts || !text || !senderId) return [];
+          return [
+            {
+              receivedAt: new Date(Number(m.ts) * 1000),
+              message: text,
+              senderId,
+              incoming: !!incomingTimestamp(m, getWorkspace().userId),
+            },
+          ];
         });
+        const channel = info.channel;
+        const directUserId =
+          channel && "user" in channel && typeof channel.user === "string" ? channel.user : undefined;
+        return { conversationId: id, directUserId, messageHistory };
       }),
     );
     const failed = conversationIds.filter((_, i) => histories[i].status === "rejected");
     const unreadConversations = histories
-      .flatMap((r, i) =>
-        r.status === "fulfilled" ? [{ conversationId: conversationIds[i], messages: r.value.messages }] : [],
-      )
-      .map(({ messages, conversationId }) => ({
-        conversationId,
-        messageHistory: messages
-          ?.map((message) => ({
-            receivedAt: message.ts ? new Date(parseFloat(message.ts) * 1000) : undefined,
-            message:
-              message.text && message.text !== "This content can't be displayed."
-                ? message.text
-                : message.blocks?.map((block) => block.text?.text).join("\n\n\n\n\n\n\n\n"),
-            senderId: message.user ?? message.bot_id,
-          }))
-          .filter((x): x is Message => !!x.receivedAt && !!x.message && !!x.senderId),
-      }))
-      .filter((channel): channel is UnreadChannelInfo => !!channel.messageHistory && channel.messageHistory.length > 0)
+      .flatMap((result) => (result.status === "fulfilled" && result.value.messageHistory.length ? [result.value] : []))
       .sort(
         (a, b) =>
           new Date(b.messageHistory[0].receivedAt).getTime() - new Date(a.messageHistory[0].receivedAt).getTime(),

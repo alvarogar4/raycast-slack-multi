@@ -1,9 +1,9 @@
 import { handleError } from "../utils";
-import { SlackClient, type User, type Channel, type Group } from "./SlackClient";
+import { SlackClient, type User, type Channel, type Group, type DirectMessageProfiles } from "./SlackClient";
 import { useCachedPromise, usePromise } from "@raycast/utils";
-import { useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { createDirectoryUserSearch, directoryUsersToShow, mergeDirectorySearchResults } from "./directory";
-import { clearFailedMemberLoad } from "./memberDirectoryCache";
+import { clearFailedMemberLoad, memberDirectoryRevision, subscribeMemberDirectory } from "./memberDirectoryCache";
 import { clearFailedConversationLoad } from "./channelDirectoryCache";
 import { workspaceKey } from "./workspaces";
 import { inWorkspace } from "./WebClient";
@@ -26,8 +26,11 @@ export const useChannels = (workspace: Workspace) =>
     },
   );
 
-export const useDirectorySearch = (workspace: Workspace, query: string) => {
+export const useDirectorySearch = (workspace: Workspace, query: string, favoritePeers: string[]) => {
   const [attempt, setAttempt] = useState(0);
+  const revision = useSyncExternalStore(subscribeMemberDirectory, () =>
+    memberDirectoryRevision(workspaceKey(workspace)),
+  );
   const [memberFailure, setMemberFailure] = useState<{ query: string; attempt: number; error: Error }>();
   const userSearchAbortable = useRef<AbortController>(null);
   const channelSearchAbortable = useRef<AbortController>(null);
@@ -35,7 +38,12 @@ export const useDirectorySearch = (workspace: Workspace, query: string) => {
   const [preview, setPreview] = useState<{ query: string; users: User[] }>();
 
   const [partialChannels, setPartialChannels] = useState<Channel[]>([]);
-  const [partialNames, setPartialNames] = useState<ReadonlyMap<string, string>>(new Map());
+  const [partialProfiles, setPartialProfiles] = useState<DirectMessageProfiles>({
+    names: new Map(),
+    apps: new Set(["USLACKBOT"]),
+    favoriteUsers: [],
+    inactive: new Set(),
+  });
   const peerAbortable = useRef<AbortController>(null);
   const [partialGroups, setPartialGroups] = useState<{ query: string; rows: Group[] }>();
   const userSearch = useMemo(
@@ -77,11 +85,21 @@ export const useDirectorySearch = (workspace: Workspace, query: string) => {
     },
   );
   const peerNames = usePromise(
-    ({ workspace }: { workspace: Workspace; attempt: number }) => {
+    ({
+      workspace,
+      favoritePeers,
+    }: {
+      workspace: Workspace;
+      attempt: number;
+      revision: number;
+      favoritePeers: string[];
+    }) => {
       const signal = peerAbortable.current?.signal;
-      return inWorkspace(workspace, () => SlackClient.getDirectMessageNames(signal, setPartialNames));
+      return inWorkspace(workspace, () =>
+        SlackClient.getDirectMessageProfiles(signal, setPartialProfiles, favoritePeers),
+      );
     },
-    [{ workspace, attempt }],
+    [{ workspace, attempt, revision, favoritePeers }],
     {
       abortable: peerAbortable,
       onError(error) {
@@ -132,7 +150,10 @@ export const useDirectorySearch = (workspace: Workspace, query: string) => {
       (!conversations.isLoading && !conversations.error ? conversations.data?.[1] : undefined) ??
         (partialGroups?.query === query ? partialGroups.rows : []),
     ]),
-    peerNames: peerNames.data ?? partialNames,
+    peerNames: (peerNames.data ?? partialProfiles).names,
+    apps: (peerNames.data ?? partialProfiles).apps,
+    favoriteUsers: (peerNames.data ?? partialProfiles).favoriteUsers,
+    inactive: (peerNames.data ?? partialProfiles).inactive,
     loadingNames: peerNames.isLoading,
     error:
       peerNames.error ||

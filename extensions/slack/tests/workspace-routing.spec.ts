@@ -14,10 +14,17 @@ import {
 import { SlackClient } from "../src/shared/client/SlackClient";
 import { confirmationWorkspace, workspaceKey } from "../src/shared/client/workspaces";
 import SetStatus from "../src/set-status";
+import { favoriteId, readFavorites, saveFavorite } from "../src/shared/client/favorites";
+import { loadConversationActivity } from "../src/shared/client/conversationActivity";
 import { namedDirectoryRows } from "../src/search";
 import send from "../src/tools/send-message";
 import getEmojis from "../src/tools/get-emojis";
-import { clearFailedMemberLoad } from "../src/shared/client/memberDirectoryCache";
+import {
+  clearFailedMemberLoad,
+  getMemberPage,
+  memberDirectoryRevision,
+  subscribeMemberDirectory,
+} from "../src/shared/client/memberDirectoryCache";
 import { clearFailedConversationLoad } from "../src/shared/client/channelDirectoryCache";
 import channelMentions from "../src/tools/search-channel-mentions";
 import getHuddleLink from "../src/tools/get-huddle-link";
@@ -64,14 +71,53 @@ vi.mock("@slack/web-api", async (importOriginal) => {
 });
 
 let directoryRecovered = false;
+let failReplyRefresh = false;
 const calls: { team: string; method: string }[] = [];
 dispatch.mockImplementation(async (config) => {
   const team = String(config.headers.Authorization).split("-").pop() ?? "";
   const method = String(config.url).split("/").pop() ?? "";
   const args = new URLSearchParams(String(config.data));
   calls.push({ team, method });
+  if (team === "TQUEUE429" && method === "conversations.list")
+    return { status: 429, statusText: "rate limited", headers: { "retry-after": "1" }, config, data: {} };
   let data: Record<string, unknown> = { ok: true };
   switch (method) {
+    case "search.messages": {
+      const second = args.get("page") === "2";
+      data = {
+        ok: true,
+        messages: {
+          paging: { pages: 2 },
+          matches: [
+            { channel: { id: second ? "C2" : "C1" }, ts: second ? "70" : "100", user: "UPEER" },
+            { channel: { id: "C1" }, ts: "200", user: "U00000001" },
+          ],
+        },
+      };
+      break;
+    }
+    case "conversations.replies":
+      if (team === "TORDERBASE") {
+        if (failReplyRefresh) data = { ok: false, error: "missing_scope" };
+        else
+          data = args.get("cursor")
+            ? { ok: true, messages: [{ ts: "115", user: "UPEER" }] }
+            : {
+                ok: true,
+                messages: [{ ts: "112", user: "U00000001" }],
+                has_more: true,
+                response_metadata: { next_cursor: "replies-2" },
+              };
+        break;
+      }
+      data = {
+        ok: true,
+        messages: [
+          { ts: "115", user: "UPEER" },
+          { ts: "125", user: "U00000001" },
+        ],
+      };
+      break;
     case "auth.test":
       if (team === "TINVALID1") {
         expect([...oauthTokens.values()]).not.toContain("xoxp-fixture-TINVALID1");
@@ -82,14 +128,36 @@ dispatch.mockImplementation(async (config) => {
       break;
     case "users.list":
     case "conversations.list":
+      if (team.startsWith("TORDER")) {
+        const count = team === "TORDERBASE" ? 3 : 300;
+        data = {
+          ok: true,
+          channels: Array.from({ length: count }, (_, i) => ({
+            id: "C" + (i + 1),
+            name: "channel" + i,
+            is_member: true,
+          })),
+        };
+        break;
+      }
       if (team === "TDIRECT01" || team === "TDIRECT02") {
         const cursor = args.get("cursor");
-        const peer = { id: "U00000101", name: "peer", team_id: team, real_name: "Late Member " + team };
+        const peer = {
+          id: "U00000101",
+          name: "peer",
+          team_id: team,
+          real_name: "Late Member " + team,
+          profile: { email: "late@example.org" },
+        };
         const items =
           method === "users.list"
             ? {
                 members: cursor
-                  ? [peer, { id: "UBOT00101", name: "bot", is_bot: true, profile: { display_name: "Support Bot" } }]
+                  ? [
+                      peer,
+                      { id: "UDELETED1", name: "former", team_id: team, deleted: true },
+                      { id: "UBOT00101", name: "bot", is_bot: true, profile: { display_name: "Support Bot" } },
+                    ]
                   : Array.from({ length: 100 }, (_, i) => ({ id: "UMEMBER" + i, name: "member" + i, team_id: team })),
               }
             : {
@@ -141,12 +209,39 @@ dispatch.mockImplementation(async (config) => {
         channel: {
           id: args.get("channel"),
           name: team,
+          user: args.get("channel") === "DORDEREVT" ? "UPEER" : undefined,
           connected_team_ids: ["TPARTNER1"],
           last_read: args.get("channel") === "CUNKNOWN1" ? undefined : "1",
         },
       };
       break;
     case "conversations.history":
+      if (args.get("channel") === "DORDEREVT") {
+        data = {
+          ok: true,
+          messages: [
+            { ts: "100", user: "UPEER", subtype: "channel_join", text: "joined" },
+            { ts: "90", user: "UPEER", text: "hello" },
+          ],
+        };
+        break;
+      }
+      if (team.startsWith("TORDER")) {
+        data =
+          team === "TORDERDENY"
+            ? { ok: false, error: "missing_scope" }
+            : {
+                ok: true,
+                messages:
+                  args.get("channel") === "C1"
+                    ? [
+                        { ts: "110", user: "UPEER" },
+                        { ts: "90", user: "UPEER", latest_reply: "125" },
+                      ]
+                    : [{ ts: "20", user: "UPEER" }],
+              };
+        break;
+      }
       data =
         args.get("channel") === "CBROKEN01"
           ? { ok: false, error: "channel_not_found" }
@@ -347,7 +442,25 @@ it("names DMs beyond the people limit and keeps the same user ID separate in eac
         { id: "D00000001", name: "Loading direct message…" },
       ]);
       expect(namedDirectoryRows(channels, new Map(), "general", true).map((item) => item.name)).toEqual(["general"]);
-      const names = await SlackClient.getDirectMessageNames(undefined, () => {});
+      const { names, apps, inactive, favoriteUsers } = await SlackClient.getDirectMessageProfiles(undefined, () => {}, [
+        "U00000101",
+        "UDELETED1",
+      ]);
+      expect(inactive.has("UDELETED1")).toBe(true);
+      expect(
+        namedDirectoryRows([], names, "", false, [{ ...users[0], id: "UDELETED1" }], favoriteUsers, inactive).map(
+          (r) => r.id,
+        ),
+      ).not.toContain("UDELETED1");
+      expect(favoriteUsers.map((u) => u.id)).toEqual(["U00000101"]);
+      expect(
+        namedDirectoryRows(users, names, "Late", false, [], favoriteUsers).some((row) => row.id === "U00000101"),
+      ).toBe(true);
+      expect(namedDirectoryRows([], names, "@example.org", false, [], favoriteUsers).map((r) => r.id)).toEqual([
+        "U00000101",
+      ]);
+      expect(namedDirectoryRows([], names, "Nobody", false, [], favoriteUsers)).toEqual([]);
+      expect([...apps]).toEqual(["USLACKBOT", "UBOT00101"]);
       const rows = namedDirectoryRows([...users, ...channels], names, "", false);
       expect(rows.find((item) => item.id === "D00000001")?.name).toBe("Late Member " + team);
       expect(rows.find((item) => item.id === "D00000002")?.name).toBe("Support Bot");
@@ -375,5 +488,117 @@ it("names DMs beyond the people limit and keeps the same user ID separate in eac
       ]);
       expect(calls.filter((call) => call.team === team && call.method === "users.list")).toHaveLength(2);
     });
+  }
+});
+
+it("shares a favorite between a person and their DM while isolating same IDs in other registrations", async () => {
+  const w = await addWorkspace("xoxp-fixture-TFAVORITE");
+  const other = { ...w, registration: "other" };
+  const dm = { id: "D1", directUserId: "U1", name: "Ada", icon: "person", teamId: w.teamId };
+  const channel = { ...dm, id: "C1", directUserId: undefined };
+  const id = favoriteId(w, dm);
+  expect(id).toEqual(favoriteId(w, { ...dm, id: "U1", directUserId: undefined }));
+  await Promise.all([saveFavorite(id, true), saveFavorite(favoriteId(w, channel), true)]);
+  expect((await readFavorites()).has(favoriteId(other, dm))).toBe(false);
+  await saveFavorite(id, false);
+  const remaining = await readFavorites();
+  expect(remaining.has(id)).toBe(false);
+  expect(remaining.has(favoriteId(w, channel))).toBe(true);
+});
+
+it("combines later search pages with newer channel history and verifies incoming thread reply authors", async () => {
+  const w = await addWorkspace("xoxp-fixture-TORDERBASE");
+  const progress = vi.fn();
+  const result = await inWorkspace(w, () => loadConversationActivity(undefined, progress));
+  expect(progress.mock.calls[1][0]).toEqual({ C1: 100, C2: 70 });
+  expect(result).toEqual({ activity: { C1: 115, C2: 70, C3: 20 }, incomplete: false });
+  expect(calls.filter((c) => c.team === w.teamId && c.method === "conversations.replies")).toHaveLength(2);
+  failReplyRefresh = true;
+  const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 6 * 60 * 1000);
+  try {
+    const limited = await inWorkspace(w, () => loadConversationActivity(undefined, () => {}));
+    expect(limited.incomplete).toBe(true);
+    expect(limited.activity.C1).toBe(115);
+  } finally {
+    clock.mockRestore();
+    failReplyRefresh = false;
+  }
+});
+
+it("bounds Slack history traffic, including reply calls, and continues on the next refresh", async () => {
+  const w = await addWorkspace("xoxp-fixture-TORDERWIDE");
+  const run = () => inWorkspace(w, () => loadConversationActivity(undefined, () => {}));
+  const first = await run();
+  expect(first.incomplete).toBe(true);
+  const count = calls.filter(
+    (c) => c.team === w.teamId && ["conversations.history", "conversations.replies"].includes(c.method),
+  ).length;
+  expect(count).toBe(12);
+  const second = await run();
+  expect(Object.keys(second.activity).length).toBeGreaterThan(Object.keys(first.activity).length);
+});
+
+it("stops a missing-scope history scan and makes zero calls for a cancelled scan", async () => {
+  const w = await addWorkspace("xoxp-fixture-TORDERDENY");
+  const before = calls.length;
+  await expect(inWorkspace(w, () => loadConversationActivity(AbortSignal.abort(), () => {}))).rejects.toThrow();
+  expect(calls).toHaveLength(before);
+  const result = await inWorkspace(w, () => loadConversationActivity(undefined, () => {}));
+  expect(result.incomplete).toBe(true);
+  expect(calls.filter((c) => c.team === w.teamId && c.method === "conversations.history")).toHaveLength(1);
+});
+
+it("keeps unread DM favorite identity and skips channel events when ranking incoming unread messages", async () => {
+  const w = await addWorkspace("xoxp-fixture-TUNREADEV");
+  const {
+    conversations: [dm],
+  } = await inWorkspace(w, () => SlackClient.getUnreadConversations(["DORDEREVT"]));
+  expect(dm.directUserId).toBe("UPEER");
+  expect(dm.messageHistory.map((m) => m.incoming)).toEqual([false, true]);
+});
+
+it("cancels before network dispatch if a scan is aborted during SDK credential validation", async () => {
+  const w = await addWorkspace("xoxp-fixture-TCANCEL99");
+  const controller = new AbortController();
+  const original = LocalStorage.getItem;
+  await inWorkspace(w, async () => {
+    const read = vi.spyOn(LocalStorage, "getItem").mockImplementationOnce((key) => {
+      controller.abort();
+      return original(key);
+    });
+    try {
+      await expect(loadConversationActivity(controller.signal, () => {})).rejects.toThrow();
+    } finally {
+      read.mockRestore();
+    }
+  });
+  expect(calls.filter((c) => c.team === w.teamId && c.method === "search.messages")).toHaveLength(0);
+});
+
+it("leaves the interactive client available when directory enrichment hits a rate limit", async () => {
+  const w = await addWorkspace("xoxp-fixture-TQUEUE429");
+  await inWorkspace(w, async () => {
+    await expect(loadConversationActivity(undefined, () => {})).rejects.toThrow(/rate/i);
+    expect((await getSlackWebClient().emoji.list()).ok).toBe(true);
+  });
+  expect(calls.filter((c) => c.team === w.teamId && c.method === "conversations.list")).toHaveLength(1);
+});
+
+it("notifies favorite profile readers when a stale member snapshot is replaced", async () => {
+  const key = "T-favorite-refresh";
+  const page = (deleted: boolean) => async () => ({ items: [{ id: "U1", name: "peer", deleted }] });
+  await getMemberPage(key, page(false), 0);
+  const before = memberDirectoryRevision(key);
+  const notify = vi.fn();
+  const unsubscribe = subscribeMemberDirectory(notify);
+  const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 61 * 60 * 1000);
+  try {
+    await getMemberPage(key, page(true), 0);
+    expect(memberDirectoryRevision(key)).toBeGreaterThan(before);
+    expect(notify).toHaveBeenCalled();
+    expect((await getMemberPage(key, page(true), 0)).items[0].deleted).toBe(true);
+  } finally {
+    clock.mockRestore();
+    unsubscribe();
   }
 });

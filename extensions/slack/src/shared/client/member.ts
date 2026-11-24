@@ -1,8 +1,18 @@
 import type { SlackMember } from "./slackTypes";
 
+export function isAppMember(member: SlackMember): boolean {
+  return !!(
+    member.id === "USLACKBOT" ||
+    member.is_bot ||
+    member.is_workflow_bot ||
+    member.profile?.bot_id ||
+    member.profile?.api_app_id
+  );
+}
+
 export function toUserName(member: SlackMember): readonly [username: string, displayName: string] | undefined {
   const { id, name: username } = member;
-  if (!id || member.is_bot || member.is_workflow_bot || member.deleted || id === "USLACKBOT") return undefined;
+  if (!id || isAppMember(member) || member.deleted) return undefined;
 
   const displayName = memberDisplayName(member);
 

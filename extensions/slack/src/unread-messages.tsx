@@ -4,6 +4,13 @@ import { useEffect, useRef, useState } from "react";
 import { convertSlackEmojiToUnicode } from "./shared/utils";
 
 import { Message, SlackClient, useChannels, User, useUnreadConversations } from "./shared/client";
+import {
+  combinedConversations,
+  useConversationOptions,
+  type ConversationOptions,
+  type RenderRows,
+} from "./shared/ConversationList";
+import { favoriteId } from "./shared/client/favorites";
 import { WorkspaceList } from "./shared/WorkspaceViews";
 import { type Workspace, workspaceKey } from "./shared/client/workspaces";
 import { inWorkspace } from "./shared/client/WebClient";
@@ -14,7 +21,17 @@ import { OpenChannelInSlack, useSlackApp } from "./shared/OpenInSlack";
 // and a reopened configuration never races a write still in flight from the previous one.
 let storageQueue: Promise<void> = Promise.resolve();
 
-function UnreadRows({ workspace, query }: { workspace: Workspace; query: string }) {
+function UnreadRows({
+  workspace,
+  query,
+  children,
+  options,
+}: {
+  workspace: Workspace;
+  query: string;
+  options: ConversationOptions;
+  children: RenderRows;
+}) {
   const conversationsStorageKey = "unread:" + workspaceKey(workspace);
   const [selectedConversations, setSelectedConversations] = useState<string[]>();
 
@@ -102,15 +119,16 @@ function UnreadRows({ workspace, query }: { workspace: Workspace; query: string 
     }
   };
 
-  return (
-    <List.Section
-      title={workspace.teamName}
-      subtitle={
-        !selectedConversations || isLoadingUnreadConversations || isLoadingChannels || isLoading
-          ? "Loading…"
-          : undefined
-      }
-    >
+  const loading = !selectedConversations || isLoadingUnreadConversations || isLoadingChannels || isLoading;
+  const settledEmpty =
+    !!selectedConversations?.length &&
+    !isLoadingUnreadConversations &&
+    !unreadError &&
+    unread?.failed.length === 0 &&
+    unread.conversations.length === 0;
+  const hasNotice = unreadError || unread?.failed.length || selectedConversations?.length === 0 || settledEmpty;
+  const notice = hasNotice ? (
+    <>
       {(unreadError || !!unread?.failed.length) && (
         <List.Item
           title="Could not read all followed conversations"
@@ -129,6 +147,7 @@ function UnreadRows({ workspace, query }: { workspace: Workspace; query: string 
                   />
                 }
               />
+              {options.actions()}
             </ActionPanel>
           }
         />
@@ -149,6 +168,7 @@ function UnreadRows({ workspace, query }: { workspace: Workspace; query: string 
                   />
                 }
               />
+              {options.actions()}
             </ActionPanel>
           }
           title="Select Conversations"
@@ -157,18 +177,102 @@ function UnreadRows({ workspace, query }: { workspace: Workspace; query: string 
         />
       )}
 
-      {selectedConversations &&
-        selectedConversations.length > 0 &&
-        unread &&
-        !unreadError &&
-        !unread.failed.length &&
-        unread.conversations.length === 0 && (
+      {settledEmpty && (
+        <List.Item
+          actions={
+            <ActionPanel>
+              <Action.Push
+                icon={Icon.Gear}
+                title="Configure"
+                target={
+                  <Configuration
+                    storageKey={conversationsStorageKey}
+                    data={data}
+                    refreshConversations={refreshConversations}
+                  />
+                }
+              />
+              {options.actions()}
+            </ActionPanel>
+          }
+          title="No Unread Messages Found"
+          accessories={[{ tag: workspace.teamName }]}
+        />
+      )}
+    </>
+  ) : undefined;
+  const rows = (unreadConversations ?? []).flatMap((unreadConversation) => {
+    const conversation =
+      users?.find((user) => user.conversationId === unreadConversation.conversationId) ??
+      channels?.find((channel) => channel.id === unreadConversation.conversationId) ??
+      groups?.find((group) => group.id === unreadConversation.conversationId);
+
+    const incoming = unreadConversation.messageHistory.find(
+      (message) => message.incoming ?? message.senderId !== workspace.userId,
+    );
+    const preview = incoming ?? unreadConversation.messageHistory[0];
+    const name = conversation?.name ?? unreadConversation.conversationId;
+    if (query && ![name, preview.message].some((value) => value?.toLowerCase().includes(query.toLowerCase())))
+      return [];
+    const id = workspaceKey(workspace) + "/" + unreadConversation.conversationId;
+    const peer = unreadConversation.directUserId;
+    const pin = conversation
+      ? favoriteId(workspace, conversation)
+      : peer
+        ? workspaceKey(workspace) + "/" + peer
+        : unreadConversation.conversationId.startsWith("D")
+          ? undefined
+          : id;
+    const favorite = !!pin && options.favorites?.has(pin);
+    return [
+      {
+        id,
+        name,
+        favorite,
+        latest: incoming ? new Date(incoming.receivedAt).getTime() / 1000 : 0,
+        element: (
           <List.Item
+            id={id}
+            title={name}
+            subtitle={convertSlackEmojiToUnicode(preview.message)}
+            icon={conversation?.icon}
+            accessories={[
+              { tag: workspace.teamName },
+              ...(favorite ? [{ icon: Icon.Star, tooltip: "Favorite" }] : []),
+              { text: timeDifference(new Date(preview.receivedAt)) },
+              { icon: Icon.Message, text: `${unreadConversation.messageHistory.length}` },
+            ]}
             actions={
               <ActionPanel>
+                <OpenChannelInSlack
+                  workspaceId={workspace.teamId}
+                  channelId={unreadConversation.conversationId}
+                  isAppInstalled={isAppInstalled}
+                  onAction={() => markConversationAsRead(unreadConversation.conversationId)}
+                />
+                <Action
+                  shortcut={{ modifiers: ["cmd", "shift"], key: "enter" }}
+                  title="Mark as Read"
+                  icon={Icon.Checkmark}
+                  onAction={() => markConversationAsRead(unreadConversation.conversationId, true)}
+                />
+
                 <Action.Push
+                  title="Show Unread Messages"
+                  icon={Icon.Sidebar}
+                  shortcut={{ modifiers: ["cmd"], key: "m" }}
+                  target={
+                    <UnreadMessagesConversation
+                      conversationName={conversation?.name ?? ""}
+                      messageHistory={unreadConversation.messageHistory}
+                      users={users}
+                    />
+                  }
+                />
+                <Action.Push
+                  title="Configure Command"
                   icon={Icon.Gear}
-                  title="Configure"
+                  shortcut={{ modifiers: ["opt"], key: "c" }}
                   target={
                     <Configuration
                       storageKey={conversationsStorageKey}
@@ -177,87 +281,15 @@ function UnreadRows({ workspace, query }: { workspace: Workspace; query: string 
                     />
                   }
                 />
+                {options.actions(pin)}
               </ActionPanel>
             }
-            title="No Unread Messages Found"
-            accessories={[{ tag: workspace.teamName }]}
           />
-        )}
-
-      {unreadConversations && unreadConversations.length > 0 && (
-        <>
-          {unreadConversations.map((unreadConversation) => {
-            const conversation =
-              users?.find((user) => user.conversationId === unreadConversation.conversationId) ??
-              channels?.find((channel) => channel.id === unreadConversation.conversationId) ??
-              groups?.find((group) => group.id === unreadConversation.conversationId);
-
-            if (
-              query &&
-              ![conversation?.name, unreadConversation.messageHistory[0]?.message].some((v) =>
-                v?.toLowerCase().includes(query.toLowerCase()),
-              )
-            )
-              return null;
-            return (
-              <List.Item
-                key={unreadConversation.conversationId}
-                title={conversation?.name ?? ""}
-                subtitle={convertSlackEmojiToUnicode(unreadConversation.messageHistory[0].message)}
-                icon={conversation?.icon}
-                accessories={[
-                  { tag: workspace.teamName },
-                  { text: timeDifference(new Date(unreadConversation.messageHistory[0].receivedAt)) },
-                  { icon: Icon.Message, text: `${unreadConversation.messageHistory.length}` },
-                ]}
-                actions={
-                  <ActionPanel>
-                    <OpenChannelInSlack
-                      workspaceId={workspace.teamId}
-                      channelId={unreadConversation.conversationId}
-                      isAppInstalled={isAppInstalled}
-                      onAction={() => markConversationAsRead(unreadConversation.conversationId)}
-                    />
-                    <Action
-                      shortcut={{ modifiers: ["cmd", "shift"], key: "enter" }}
-                      title="Mark as Read"
-                      icon={Icon.Checkmark}
-                      onAction={() => markConversationAsRead(unreadConversation.conversationId, true)}
-                    />
-
-                    <Action.Push
-                      title="Show Unread Messages"
-                      icon={Icon.Sidebar}
-                      shortcut={{ modifiers: ["cmd"], key: "m" }}
-                      target={
-                        <UnreadMessagesConversation
-                          conversationName={conversation?.name ?? ""}
-                          messageHistory={unreadConversation.messageHistory}
-                          users={users}
-                        />
-                      }
-                    />
-                    <Action.Push
-                      title="Configure Command"
-                      icon={Icon.Gear}
-                      shortcut={{ modifiers: ["opt"], key: "c" }}
-                      target={
-                        <Configuration
-                          storageKey={conversationsStorageKey}
-                          data={data}
-                          refreshConversations={refreshConversations}
-                        />
-                      }
-                    />
-                  </ActionPanel>
-                }
-              />
-            );
-          })}
-        </>
-      )}
-    </List.Section>
-  );
+        ),
+      },
+    ];
+  });
+  return children({ rows, loading, notice });
 }
 
 function UnreadMessagesConversation({
@@ -424,9 +456,15 @@ function Configuration({ data, refreshConversations, storageKey: conversationsSt
 }
 
 export default function UnreadMessages() {
+  const options = useConversationOptions(false);
   return (
-    <WorkspaceList placeholder="Filter unread conversations">
-      {(workspace, query) => <UnreadRows workspace={workspace} query={query} />}
-    </WorkspaceList>
+    <WorkspaceList
+      placeholder="Filter unread conversations"
+      merged={(workspaces, query, renderList) =>
+        combinedConversations(workspaces, options, renderList, (workspace, next) => (
+          <UnreadRows {...{ workspace, query, options }}>{next}</UnreadRows>
+        ))
+      }
+    />
   );
 }
