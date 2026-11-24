@@ -2,6 +2,7 @@ export interface SlackConversation {
   id?: string;
   name?: string;
   user?: string;
+  connected_team_ids?: string[];
   shared_team_ids?: string[];
   internal_team_ids?: string[];
   context_team_id?: string;

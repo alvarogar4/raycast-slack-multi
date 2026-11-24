@@ -118,6 +118,11 @@ async function readLoadPage(load: Load, index: number): Promise<MemberPage> {
   }
 }
 
+export function clearFailedMemberLoad(accountKey: string) {
+  const key = "member-directory:" + accountKey;
+  if (loads.get(key)?.failedAt !== undefined) loads.delete(key);
+}
+
 export type MemberPage = { items: SlackMember[]; hasMore: boolean; error?: unknown };
 
 /**

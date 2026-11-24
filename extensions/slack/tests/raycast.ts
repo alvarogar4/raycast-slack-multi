@@ -44,3 +44,22 @@ export const Toast = { Style: { Failure: "failure", Success: "success" } };
 export const PopToRootType = { Immediate: "immediate" };
 export const showHUD = vi.fn();
 export const showToast = vi.fn();
+
+export const oauthTokens = new Map<string, string>();
+export const OAuth = {
+  RedirectMethod: { Web: "web" },
+  PKCEClient: class {
+    constructor(public options: { providerId: string }) {}
+    async getTokens() {
+      const accessToken = oauthTokens.get(this.options.providerId);
+      return accessToken ? { accessToken, isExpired: () => false } : undefined;
+    }
+    async setTokens({ accessToken }: { accessToken: string }) {
+      oauthTokens.set(this.options.providerId, accessToken);
+    }
+    async removeTokens() {
+      oauthTokens.delete(this.options.providerId);
+    }
+  },
+};
+export const LaunchType = { UserInitiated: "userInitiated" };

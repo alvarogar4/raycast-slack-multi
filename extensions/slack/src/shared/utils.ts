@@ -1,4 +1,4 @@
-import { open } from "@raycast/api";
+import { launchCommand, LaunchType, open } from "@raycast/api";
 import { showFailureToast } from "@raycast/utils";
 import { CodedError, ErrorCode } from "@slack/web-api";
 import { formatDistance } from "date-fns";
@@ -79,11 +79,14 @@ const handleError = async (error: CodedError | Error | unknown, title?: string) 
       title: "Slack permission required",
       message: [
         missingScope.needed,
-        "Add the user scopes in your Slack app, reinstall it, then reconnect in Manage Workspaces.",
+        "Reconnect the workspace to grant access. If you use your own Slack app, add the required user scopes first.",
       ]
         .filter(Boolean)
         .join(". "),
-      primaryAction: { title: "Open Slack Apps", onAction: () => open("https://api.slack.com/apps") },
+      primaryAction: {
+        title: "Manage Workspaces",
+        onAction: () => launchCommand({ name: "manage-workspaces", type: LaunchType.UserInitiated }),
+      },
     });
   }
 

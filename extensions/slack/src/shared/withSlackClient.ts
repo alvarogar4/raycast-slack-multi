@@ -42,9 +42,15 @@ export async function workspaceMentions<I extends { workspace?: string }, R exte
     if (failures.length === targets.length) throw new Error(message);
     await showToast(Toast.Style.Failure, message);
   }
-  return rows.map(({ workspace: w, item }) => ({
-    ...item,
-    title: item.title + " · " + w.teamName,
-    uri: item.uri + "?workspace=" + w.teamId + "&registration=" + w.registration,
-  }));
+  return rows.map(({ workspace: w, item }) => {
+    const uri = new URL(item.uri);
+    if (uri.hostname === "channels") uri.pathname = "/" + w.teamId + "/" + uri.pathname.split("/")[2];
+    uri.searchParams.set("workspace", w.teamId);
+    uri.searchParams.set("registration", w.registration);
+    return {
+      ...item,
+      title: item.title + " · " + w.teamName,
+      uri: uri.toString(),
+    };
+  });
 }

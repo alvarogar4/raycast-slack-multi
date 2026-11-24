@@ -25,13 +25,12 @@ async function readResource({ uri }: Input) {
 
 export default async function read({ uri }: Input) {
   const url = new URL(uri);
-  const w = resolveWorkspace(
-    await accounts.list(),
-    url.searchParams.get("workspace") ?? url.pathname.split("/")[1],
-    true,
-  );
+  const team = url.searchParams.get("workspace");
   const registration = url.searchParams.get("registration");
-  if (registration && registration !== w.registration) throw new Error("Workspace changed. Select the mention again.");
+  if (!team || !registration) throw new Error("Select the Slack mention again to identify its workspace.");
+  const w = resolveWorkspace(await accounts.list(), team, true);
+  if (w.teamId !== team || registration !== w.registration)
+    throw new Error("Workspace changed. Select the mention again.");
   url.search = "";
   return inWorkspace(w, () => readResource({ uri: url.toString() }));
 }

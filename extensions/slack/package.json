@@ -149,6 +149,13 @@
       ]
     },
     {
+      "name": "connect-workspace",
+      "title": "Connect with Slack",
+      "subtitle": "Slack",
+      "description": "Choose a workspace in Slack and authorize it in your browser.",
+      "mode": "no-view"
+    },
+    {
       "name": "manage-workspaces",
       "title": "Manage Workspaces",
       "subtitle": "Slack",

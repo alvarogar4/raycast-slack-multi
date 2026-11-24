@@ -1,4 +1,5 @@
-import { getSlackWebClient } from "../shared/client/WebClient";
+import { workspaceKey } from "../shared/client/workspaces";
+import { getWorkspace, getSlackWebClient } from "../shared/client/WebClient";
 import { withSlackClient } from "../shared/withSlackClient";
 
 type Input = {
@@ -14,7 +15,7 @@ async function getEmojis() {
     throw new Error(emojis.error);
   }
 
-  return emojis.emoji;
+  return { teamId: getWorkspace().teamId, workspace: workspaceKey(getWorkspace()), emojis: emojis.emoji };
 }
 
 export default async function run(input: Input) {

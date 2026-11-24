@@ -10,7 +10,10 @@ import {
 import { directoryConversation, toChannel } from "./conversation";
 import { searchConversationDirectory } from "./conversationSearch";
 
-function fixture() {
+function fixture(
+  oauthStatus: () => Promise<"connected" | "missing" | "expired"> = async () => "connected",
+  afterWrite?: () => void,
+) {
   const values = new Map<string, string>();
   const accounts = workspaceStore(
     {
@@ -27,7 +30,12 @@ function fixture() {
         values.delete(k);
       },
     },
-    async (fn) => fn(),
+    async (fn) => {
+      const result = await fn();
+      afterWrite?.();
+      return result;
+    },
+    oauthStatus,
   );
   const add = (id: string, user = "U1") =>
     accounts.add("xoxp-test-fixture", async () => ({ ok: true, team: id, team_id: id, user_id: user }));
@@ -52,7 +60,7 @@ test("add validates before writing and keeps tokens out of command metadata", as
   const w = await add("T1");
   assert.deepEqual(await accounts.list(), [w]);
   assert.equal("token" in w, false);
-  assert.equal((await accounts.credential(w)).token, "xoxp-test-fixture");
+  assert.deepEqual(await accounts.credential(w), { ...w, token: "xoxp-test-fixture" });
   await assert.rejects(add("T1", "U2"), /already connected/);
 });
 
@@ -142,7 +150,7 @@ test("a damaged account can be removed while healthy registrations remain usable
   const { values, accounts, add } = fixture();
   const w = await add("T1");
   values.set("workspace:Tbad", "{");
-  assert.deepEqual(await accounts.inspect(), { valid: [w], invalid: ["Tbad"] });
+  assert.deepEqual(await accounts.inspect(), { valid: [w], invalid: ["Tbad"], disconnected: [] });
   await accounts.removeInvalid("Tbad");
   await assert.rejects(accounts.removeInvalid(w.teamId), /Workspace changed/);
   assert.deepEqual(await accounts.list(), [w]);
@@ -164,4 +172,39 @@ test("a later directory failure leaves previously delivered page results availab
     /temporarily unavailable/,
   );
   assert.deepEqual(seen, [["C1"]]);
+});
+
+test("a failed credential write leaves a recoverable signed-out entry", async () => {
+  let hasGrant = false;
+  const { accounts } = fixture(async () => (hasGrant ? "connected" : "missing"));
+  const identity = { ok: true, team_id: "T1", user_id: "U1" };
+  await assert.rejects(
+    accounts.addOAuth(identity, "first", async () => {
+      assert.equal((await accounts.inspect()).disconnected[0].registration, "first");
+      throw new Error("interrupted");
+    }),
+    /interrupted/,
+  );
+  assert.deepEqual(await accounts.list(), []);
+  const replacement = await accounts.addOAuth(identity, "second", async () => {
+    hasGrant = true;
+  });
+  assert.deepEqual(await accounts.list(), [replacement]);
+});
+
+test("a lock-release failure after commit preserves the credential and its registration", async () => {
+  let hasGrant = false;
+  const { accounts } = fixture(
+    async () => (hasGrant ? "connected" : "missing"),
+    () => {
+      throw new Error("release failed");
+    },
+  );
+  await assert.rejects(
+    accounts.addOAuth({ ok: true, team_id: "T1", user_id: "U1" }, "saved", async () => {
+      hasGrant = true;
+    }),
+    /release failed/,
+  );
+  assert.equal((await accounts.list())[0].registration, "saved");
 });

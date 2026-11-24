@@ -122,7 +122,7 @@ function createConversationDirectory(name: string) {
   }
 
   /** Returns page `index` of the directory. A stale snapshot is served while a refresh runs in the background. */
-  return async function getPage(
+  async function getPage(
     accountKey: string,
     fetchPage: FetchPage,
     index: number,
@@ -155,11 +155,17 @@ function createConversationDirectory(name: string) {
     const load = loads.get(key);
     if (!load) throw new Error("Channel directory is unavailable");
     return readLoadPage(load, index);
-  };
+  }
+  function clearFailedLoad(accountKey: string) {
+    const key = name + ":" + accountKey;
+    if (loads.get(key)?.failedAt !== undefined) loads.delete(key);
+  }
+  return { getPage, clearFailedLoad };
 }
 
 /** Every channel and group DM visible to the signed-in user (conversations.list), for Open Channel and mentions. */
-export const getConversationPage = createConversationDirectory("channel-directory");
+export const { getPage: getConversationPage, clearFailedLoad: clearFailedConversationLoad } =
+  createConversationDirectory("channel-directory");
 
 /** The channels the signed-in user belongs to (users.conversations), for the default Channels mention list. */
-export const getMemberChannelPage = createConversationDirectory("member-channel-directory");
+export const { getPage: getMemberChannelPage } = createConversationDirectory("member-channel-directory");

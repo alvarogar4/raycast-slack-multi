@@ -144,9 +144,11 @@ export async function readChannelMention(
   const channelTeamIds = [
     ...(channel.internal_team_ids ?? []),
     ...(channel.shared_team_ids ?? []),
+    ...(channel.connected_team_ids ?? []),
     ...(channel.context_team_id ? [channel.context_team_id] : []),
   ];
-  if (!channelTeamIds.includes(teamId)) throw new Error("This Slack channel belongs to a different workspace.");
+  if (source?.teamId !== teamId && !channelTeamIds.includes(teamId))
+    throw new Error("This Slack channel belongs to a different workspace.");
 
   return {
     text: JSON.stringify(

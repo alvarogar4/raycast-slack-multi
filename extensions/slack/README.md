@@ -15,7 +15,7 @@ npm ci
 npm run dev
 ```
 
-Open **Manage Workspaces** in Raycast, choose **Add Workspace**, and paste a Slack user token. The extension checks it with Slack and saves it in Raycast’s encrypted LocalStorage. Repeat for each workspace. Use **Rename Workspace** to choose the label shown in results. To replace a token or switch the user for an existing workspace, remove that entry and add it again. [Raycast storage](https://developers.raycast.com/api-reference/storage)
+Run **Connect with Slack** in Raycast, or open the [command link](raycast://extensions/mommertf/slack/connect-workspace). Choose **Sign in with Slack**, select a workspace in the browser, and click **Allow**. Slack returns you to Raycast. Run the command again for each additional workspace. Each workspace has its own Raycast OAuth login. Open **Manage Workspaces** to rename or remove a connection. If Slack expires or revokes a grant, remove that connection and run **Connect with Slack** again.
 
 **Open Channel** lists available public channels, private channels you belong to, group conversations, and DMs, excluding archived conversations. Public channels you can browse before joining carry a **Not joined** label. **Join Channel** explicitly joins one. **Send Message** lets you pick a recipient from any connected workspace, then shows the recipient and workspace in the composer. [Slack conversation listing](https://docs.slack.dev/reference/methods/conversations.list/)
 
@@ -31,7 +31,7 @@ In the **Search Emojis** command preferences, set **Emoji Sort Order** to **Most
 
 ## Missing Slack permissions
 
-If Slack reports missing permissions, add the listed user scopes to the Slack app in that workspace, reinstall the app, then replace its token in **Manage Workspaces**.
+If your workspace requires app approval, request approval from your Slack administrator. If you use your own Slack app, add the missing user scopes, reinstall it, and replace its token in **Manage Workspaces**.
 
 ## Set your status from a deep link
 
@@ -52,9 +52,9 @@ The `arguments` query parameter is a URL-encoded JSON object, for example:
 
 Statuses set without an expiration stay until cleared. To pick an expiration, open the command and use the **Set New Status** form.
 
-## Create a Slack app for each workspace
+## Optional setup with your own Slack app
 
-Repeat these steps in each workspace. If your workspace requires app approval, ask its administrator to approve the installation.
+Use **Manage Workspaces → Add with User Token** if you prefer to use your own Slack app. Repeat these steps in each workspace where you want to use it. If your workspace requires app approval, ask its administrator to approve the installation.
 
 1. Open [Your Apps](https://api.slack.com/apps/).
 2. Click Button `Create New App`
@@ -138,7 +138,7 @@ Repeat these steps in each workspace. If your workspace requires app approval, a
 6. Confirm creation of app
 7. Press `Install to Workspace`
 8. Get your personal access token from `Features -> OAuth & Permissions` (section `OAuth Tokens for Your Workspace`).
-   Choose the **User OAuth Token** beginning with `xoxp-`. Paste it into **Manage Workspaces → Add Workspace**.
+   Choose the **User OAuth Token** beginning with `xoxp-`. Paste it into **Manage Workspaces → Add with User Token**.
 
 ## Proxy Support
 

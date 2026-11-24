@@ -271,7 +271,12 @@ export class SlackClient {
     return (await SlackClient.searchDirectoryMembers(query, signal)).users;
   }
 
-  public static async searchDirectoryMembers(query: string, signal?: AbortSignal, onUsers?: (users: User[]) => void) {
+  public static async searchDirectoryMembers(
+    query: string,
+    signal?: AbortSignal,
+    onUsers?: (users: User[]) => void,
+    onPartialError?: (error: Error) => void,
+  ) {
     const finish = (result: { users: User[]; userNames: ReadonlyMap<string, string> }) => {
       result.users.sort((a, b) => sortNames(a.name, b.name));
       return result;
@@ -291,7 +296,9 @@ export class SlackClient {
       );
     } catch (error) {
       if (!isMemberDirectoryScanError<User>(error)) throw error;
-      await handleError(error.failure, "Could not load the full member directory");
+      if (onPartialError)
+        onPartialError(error.failure instanceof Error ? error.failure : new Error(String(error.failure)));
+      else await handleError(error.failure, "Could not load the full member directory");
       return finish(error.partial);
     }
   }
@@ -383,10 +390,11 @@ export class SlackClient {
     const histories = await Promise.allSettled(
       conversationIds.map(async (id) => {
         const info = await slackWebClient.conversations.info({ channel: id });
-        if (!info.channel) throw new Error("Conversation is unavailable");
+        const oldest = info.channel?.last_read;
+        if (!oldest || !/^\d+(\.\d+)?$/.test(oldest)) throw new Error("Conversation read marker is unavailable");
         return slackWebClient.conversations.history({
           channel: id,
-          oldest: parseFloat(info.channel.last_read || "0") ? info.channel.last_read : undefined,
+          oldest,
         });
       }),
     );

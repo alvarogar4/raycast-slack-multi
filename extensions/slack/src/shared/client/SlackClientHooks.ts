@@ -3,6 +3,9 @@ import { SlackClient, type User, type Channel, type Group } from "./SlackClient"
 import { useCachedPromise, usePromise } from "@raycast/utils";
 import { useMemo, useRef, useState } from "react";
 import { createDirectoryUserSearch, directoryUsersToShow, mergeDirectorySearchResults } from "./directory";
+import { clearFailedMemberLoad } from "./memberDirectoryCache";
+import { clearFailedConversationLoad } from "./channelDirectoryCache";
+import { workspaceKey } from "./workspaces";
 import { inWorkspace } from "./WebClient";
 import type { Workspace } from "./workspaces";
 
@@ -24,6 +27,8 @@ export const useChannels = (workspace: Workspace) =>
   );
 
 export const useDirectorySearch = (workspace: Workspace, query: string) => {
+  const [attempt, setAttempt] = useState(0);
+  const [memberFailure, setMemberFailure] = useState<{ query: string; attempt: number; error: Error }>();
   const userSearchAbortable = useRef<AbortController>(null);
   const channelSearchAbortable = useRef<AbortController>(null);
   const conversationSearchAbortable = useRef<AbortController>(null);
@@ -36,22 +41,29 @@ export const useDirectorySearch = (workspace: Workspace, query: string) => {
       createDirectoryUserSearch(() => {
         const signal = userSearchAbortable.current?.signal;
         return inWorkspace(workspace, () =>
-          SlackClient.searchDirectoryMembers(query, signal, (matched) => {
-            if (signal?.aborted) return;
-            setPreview({ query, users: matched });
-          }),
+          SlackClient.searchDirectoryMembers(
+            query,
+            signal,
+            (matched) => {
+              if (signal?.aborted) return;
+              setPreview({ query, users: matched });
+            },
+            (error) => {
+              if (!signal?.aborted) setMemberFailure({ query, attempt, error });
+            },
+          ),
         );
       }),
-    [workspace, query],
+    [workspace, query, attempt],
   );
 
   const users = usePromise(
-    (...args: [string]) => {
+    (...args: [string, number]) => {
       // Keep the query in the hook arguments so each query starts a fresh execution.
       void args;
       return userSearch.getUsers();
     },
-    [query],
+    [query, attempt],
     {
       abortable: userSearchAbortable,
       onError(error) {
@@ -60,7 +72,7 @@ export const useDirectorySearch = (workspace: Workspace, query: string) => {
     },
   );
   const channels = usePromise(
-    (searchText: string) => {
+    ({ query: searchText }: { query: string; attempt: number }) => {
       const signal = channelSearchAbortable.current?.signal;
       return inWorkspace(workspace, () =>
         SlackClient.searchConversations(searchText, signal, undefined, "channels", (rows) => {
@@ -68,7 +80,7 @@ export const useDirectorySearch = (workspace: Workspace, query: string) => {
         }),
       );
     },
-    [query],
+    [{ query, attempt }],
     {
       abortable: channelSearchAbortable,
       onError(error) {
@@ -77,7 +89,7 @@ export const useDirectorySearch = (workspace: Workspace, query: string) => {
     },
   );
   const conversations = usePromise(
-    (searchText: string) => {
+    ({ query: searchText }: { query: string; attempt: number }) => {
       const signal = conversationSearchAbortable.current?.signal;
       return inWorkspace(workspace, () =>
         SlackClient.searchConversations(searchText, signal, userSearch.getUserNames, "groups", (_, rows) => {
@@ -85,7 +97,7 @@ export const useDirectorySearch = (workspace: Workspace, query: string) => {
         }),
       );
     },
-    [query],
+    [{ query, attempt }],
     {
       abortable: conversationSearchAbortable,
       onError(error) {
@@ -103,9 +115,16 @@ export const useDirectorySearch = (workspace: Workspace, query: string) => {
       (!conversations.isLoading && !conversations.error ? conversations.data?.[1] : undefined) ??
         (partialGroups?.query === query ? partialGroups.rows : []),
     ]),
-    error: channels.error || conversations.error || users.error,
-    retry: async () => {
-      await Promise.allSettled([channels.revalidate(), conversations.revalidate(), users.revalidate()]);
+    error:
+      channels.error ||
+      conversations.error ||
+      users.error ||
+      (memberFailure?.query === query && memberFailure.attempt === attempt ? memberFailure.error : undefined),
+    retry: () => {
+      const key = workspaceKey(workspace);
+      clearFailedMemberLoad(key);
+      clearFailedConversationLoad(key);
+      setAttempt((value) => value + 1);
     },
     isLoading: users.isLoading || channels.isLoading || conversations.isLoading,
   };

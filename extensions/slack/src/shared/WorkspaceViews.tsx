@@ -11,14 +11,14 @@ function Setup({ loading }: { loading: boolean }) {
       markdown={
         loading
           ? ""
-          : "## Connect a Slack workspace\n\nOpen Manage Workspaces and add your workspace’s user token, then reopen this command."
+          : "## Connect a Slack workspace\n\nChoose Connect with Slack, select your workspace in the browser, then reopen this command."
       }
       actions={
         !loading ? (
           <ActionPanel>
             <Action
-              title="Manage Workspaces"
-              onAction={() => launchCommand({ name: "manage-workspaces", type: LaunchType.UserInitiated })}
+              title="Connect with Slack"
+              onAction={() => launchCommand({ name: "connect-workspace", type: LaunchType.UserInitiated })}
             />
           </ActionPanel>
         ) : undefined

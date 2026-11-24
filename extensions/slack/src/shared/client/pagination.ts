@@ -61,7 +61,7 @@ export async function collectPaginatedResults<T, Result>({
     }
 
     onPage?.(results);
-    if (page.error && onPage) throw page.error;
+    if (page.error) throw page.error;
     cursor = page.nextCursor || undefined;
     if (stopAfterMatchingPage && results.length > resultCountBeforePage) {
       return results;
