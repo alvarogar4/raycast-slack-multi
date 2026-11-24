@@ -1,6 +1,6 @@
 import { Action, ActionPanel, Icon, List } from "@raycast/api";
 import { useCachedState, usePromise } from "@raycast/utils";
-import { Fragment, type ReactNode } from "react";
+import { cloneElement, Fragment, type ReactElement, type ReactNode, useState } from "react";
 import { compareConversations, type ConversationRank, type ConversationSort } from "./client/conversationOrder";
 import { workspaceKey, type Workspace } from "./client/workspaces";
 import { readFavorites, saveFavorite } from "./client/favorites";
@@ -54,13 +54,66 @@ export function useConversationOptions(appFilter = true) {
 }
 
 export type ConversationOptions = ReturnType<typeof useConversationOptions>;
-type ConversationRow = ConversationRank & { element: ReactNode };
+type ListRow = { id: string; element: ReactElement<List.Item.Props> };
+type ConversationRow = ConversationRank & ListRow;
 export interface ConversationRows {
   rows: ConversationRow[];
-  notice?: ReactNode;
+  notice?: ReactElement<List.Item.Props>;
   loading: boolean;
 }
 export type RenderRows = (source: ConversationRows) => ReactNode;
+
+export function directorySelection(
+  rows: ListRow[],
+  scope: string,
+  chosen: string | null,
+  choose: (id: string | null) => void,
+) {
+  const ids = rows.map((row) => scope + "/" + row.id);
+  const hasChoice = chosen !== null && ids.includes(chosen);
+  // A delayed native callback for the former first result must never look like an arrow press.
+  const automaticId = !hasChoice && ids.length ? "first/" + ids[0] : undefined;
+  let movedWithinRender = false;
+  const items = rows.map(({ element }, index) => {
+    const id = index === 0 && automaticId ? automaticId : ids[index];
+    return cloneElement(element, { id, key: id });
+  });
+  return {
+    items,
+    hasChoice,
+    selection: {
+      selectedItemId: hasChoice ? chosen : automaticId,
+      onSelectionChange(id: string | null) {
+        if (id && ids.includes(id)) {
+          movedWithinRender = true;
+          choose(id);
+        } else if (movedWithinRender && id === automaticId) {
+          // Up can return to the first row before React commits the preceding Down.
+          choose(ids[0]);
+        }
+      },
+    },
+  };
+}
+
+function DirectoryList({
+  rows,
+  scope,
+  loading,
+  empty,
+  renderList,
+}: {
+  rows: ListRow[];
+  scope: string;
+  loading: boolean;
+  empty: ReactNode;
+  renderList: RenderWorkspaceList;
+}) {
+  const [chosen, choose] = useState<string | null>(null);
+  const { items, hasChoice, selection } = directorySelection(rows, scope, chosen, choose);
+  if (chosen !== null && !hasChoice) choose(null);
+  return renderList(items.length ? items : empty, loading, selection);
+}
 
 // Each workspace owns its hooks and actions. Collect their current rows in the same render before sorting.
 export function combinedConversations(
@@ -68,28 +121,31 @@ export function combinedConversations(
   options: ConversationOptions,
   renderList: RenderWorkspaceList,
   source: (workspace: Workspace, next: RenderRows) => ReactNode,
+  directoryQuery?: string,
 ) {
   function collect(index: number, sources: ConversationRows[]): ReactNode {
     const w = workspaces[index];
     if (w)
       return <Fragment key={workspaceKey(w)}>{source(w, (rows) => collect(index + 1, [...sources, rows]))}</Fragment>;
     const rows = sources.flatMap((s) => s.rows).sort(compareConversations(options.sort));
+    const notices = sources.flatMap((s, i) =>
+      s.notice ? [{ id: s.notice.props.id ?? workspaceKey(workspaces[i]) + "/notice", element: s.notice }] : [],
+    );
+    const items = [...rows, ...notices];
+    const loading = sources.some((s) => s.loading);
+    const empty = (
+      <List.EmptyView
+        title={loading ? "Loading conversations…" : "No matching conversations"}
+        actions={<ActionPanel>{options.actions()}</ActionPanel>}
+      />
+    );
+    if (directoryQuery !== undefined) {
+      const scope = JSON.stringify([directoryQuery, ...workspaces.map(workspaceKey)]);
+      return <DirectoryList rows={items} {...{ scope, loading, empty, renderList }} />;
+    }
     return renderList(
-      <>
-        {rows.map((row) => (
-          <Fragment key={row.id}>{row.element}</Fragment>
-        ))}
-        {sources.map((s, i) => (
-          <Fragment key={workspaceKey(workspaces[i])}>{s.notice}</Fragment>
-        ))}
-        {rows.length === 0 && sources.every((s) => !s.notice) && (
-          <List.EmptyView
-            title={sources.some((s) => s.loading) ? "Loading conversations…" : "No matching conversations"}
-            actions={<ActionPanel>{options.actions()}</ActionPanel>}
-          />
-        )}
-      </>,
-      sources.some((s) => s.loading),
+      items.length ? items.map(({ id, element }) => <Fragment key={id}>{element}</Fragment>) : empty,
+      loading,
     );
   }
   return collect(0, []);

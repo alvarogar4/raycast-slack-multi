@@ -428,13 +428,14 @@ function DirectoryRows({
     return [{ id, name: item.name, latest: ts, favorite, element: renderRow() }];
   });
   const activityError =
-    !searchText.trim() && options.sort === "latest" && (activity.error || activity.data?.incomplete);
+    rows.length > 0 && !searchText.trim() && options.sort === "latest" && (activity.error || activity.data?.incomplete);
   return children({
     rows,
     loading,
     notice:
       error || activityError ? (
         <List.Item
+          id={workspaceKey(workspace) + (error ? "/retry-directory" : "/refresh-activity")}
           title={error ? "Could not load the full directory" : "Some conversations have limited message history"}
           accessories={[{ tag: workspace.teamName }]}
           actions={
@@ -460,9 +461,13 @@ export function ConversationDirectory({ compose = false }: { compose?: boolean }
     <WorkspaceList
       placeholder={compose ? "Choose a recipient" : "Find a channel or person"}
       merged={(workspaces, searchText, renderList) =>
-        combinedConversations(workspaces, options, renderList, (workspace, next) => (
-          <DirectoryRows {...{ workspace, searchText, options, compose }}>{next}</DirectoryRows>
-        ))
+        combinedConversations(
+          workspaces,
+          options,
+          renderList,
+          (workspace, next) => <DirectoryRows {...{ workspace, searchText, options, compose }}>{next}</DirectoryRows>,
+          searchText,
+        )
       }
     />
   );

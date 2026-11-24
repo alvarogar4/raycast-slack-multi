@@ -1,7 +1,8 @@
 import { rm } from "node:fs/promises";
 import { afterAll, expect, it, vi } from "vitest";
 import type { AdapterConfig } from "@slack/web-api/dist/WebClient";
-import { LaunchType } from "@raycast/api";
+import { LaunchType, List } from "@raycast/api";
+import { createElement } from "react";
 import { environment, oauthTokens, OAuth, LocalStorage } from "./raycast";
 import {
   accounts,
@@ -17,6 +18,7 @@ import SetStatus from "../src/set-status";
 import { favoriteId, readFavorites, saveFavorite } from "../src/shared/client/favorites";
 import { loadConversationActivity } from "../src/shared/client/conversationActivity";
 import { namedDirectoryRows } from "../src/search";
+import { directorySelection } from "../src/shared/ConversationList";
 import send from "../src/tools/send-message";
 import getEmojis from "../src/tools/get-emojis";
 import {
@@ -32,6 +34,7 @@ import readResource from "../src/read-resource";
 import { SendMessage } from "../src/shared/SendMessage";
 
 const { browserLogin } = vi.hoisted(() => ({ browserLogin: vi.fn<() => Promise<string>>() }));
+
 vi.mock("@raycast/utils", () => ({
   OAuthService: {
     slack: () => ({
@@ -275,6 +278,84 @@ dispatch.mockImplementation(async (config) => {
 
 afterAll(async () => {
   await rm(environment.supportPath, { recursive: true, force: true });
+});
+
+function picker(ids: string[], chosen: string | null, choose: (id: string | null) => void, scope = "all") {
+  return directorySelection(
+    ids.map((id) => ({ id, element: createElement(List.Item, { id, title: id }) })),
+    scope,
+    chosen,
+    choose,
+  );
+}
+
+it("distinguishes late automatic focus from Down to the same person after results are reranked", () => {
+  const choose = vi.fn();
+  const person = "work:1/U1";
+  const favorite = "other:2/U1";
+  const retry = "other:2/retry-directory";
+  const initial = picker([retry], null, choose);
+  const partial = picker([person, retry], null, choose);
+  const ready = picker([favorite, person, retry], null, choose);
+  expect(ready.selection.selectedItemId).toBe(ready.items[0].props.id);
+  expect(ready.items[0].props.title).toBe(favorite);
+  for (const state of [initial, partial, ready, partial]) {
+    ready.selection.onSelectionChange(state.selection.selectedItemId!);
+  }
+  expect(choose).not.toHaveBeenCalled();
+  const selectedPerson = ready.items[1].props.id!;
+  ready.selection.onSelectionChange(selectedPerson);
+  expect(choose).toHaveBeenCalledExactlyOnceWith(selectedPerson);
+  const reranked = picker([person, favorite, retry], selectedPerson, choose);
+  expect(reranked.items[0].props.id).toBe(selectedPerson);
+  expect(reranked.hasChoice).toBe(true);
+  expect(reranked.selection.selectedItemId).toBe(selectedPerson);
+});
+
+it("restores a Down reported after a rerank and a rapid Up reported before the next render", () => {
+  const choose = vi.fn();
+  const first = "work:1/U1";
+  const next = "other:2/U2";
+  const favorite = "other:2/U3";
+  const initial = picker([first, next], null, choose);
+  const downId = initial.items[1].props.id!;
+  const duringDown = picker([favorite, first, next], null, choose);
+  duringDown.selection.onSelectionChange(downId);
+  const afterDown = picker([favorite, first, next], choose.mock.lastCall![0], choose);
+  expect(afterDown.selection.selectedItemId).toBe(afterDown.items[2].props.id);
+  expect(afterDown.items[2].props.title).toBe(next);
+  afterDown.selection.onSelectionChange(duringDown.selection.selectedItemId!);
+  expect(choose).toHaveBeenCalledExactlyOnceWith(downId);
+
+  const withRetry = picker([first, "other:2/retry-directory"], null, choose);
+  withRetry.selection.onSelectionChange(withRetry.items[1].props.id!);
+  withRetry.selection.onSelectionChange(withRetry.items[0].props.id!);
+  const afterUp = picker([favorite, first], choose.mock.lastCall![0], choose);
+  expect(afterUp.selection.selectedItemId).toBe(afterUp.items[1].props.id);
+  expect(afterUp.items[1].props.title).toBe(first);
+});
+
+it("keeps an explicitly selected Retry reachable and resets focus for filtering or disappearing results", () => {
+  const choose = vi.fn();
+  const person = "work:1/U1";
+  const retry = "other:2/retry-directory";
+  const initial = picker([person, retry], null, choose);
+  const retryId = initial.items[1].props.id!;
+  initial.selection.onSelectionChange(retryId);
+  expect(choose).toHaveBeenCalledExactlyOnceWith(retryId);
+  const more = picker(["other:2/U1", person, retry], retryId, choose);
+  expect(more.items[2].props.id).toBe(retryId);
+  expect(more.hasChoice).toBe(true);
+  for (const fresh of [
+    picker([person, retry], retryId, choose, "new query"),
+    picker([person, "other:2/refresh-activity"], retryId, choose),
+  ]) {
+    expect(fresh.hasChoice).toBe(false);
+    expect(fresh.selection.selectedItemId).toBe(fresh.items[0].props.id);
+    fresh.selection.onSelectionChange(retryId);
+  }
+  expect(choose).toHaveBeenCalledTimes(1);
+  expect(picker([], retryId, choose).selection.selectedItemId).toBeUndefined();
 });
 
 it("isolates simultaneous SDK directory scans and follow-up sends for the same Slack ID", async () => {

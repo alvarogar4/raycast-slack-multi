@@ -27,7 +27,11 @@ function Setup({ loading }: { loading: boolean }) {
   );
 }
 
-export type RenderWorkspaceList = (rows: ReactNode, loading: boolean) => ReactNode;
+export type RenderWorkspaceList = (
+  rows: ReactNode,
+  loading: boolean,
+  selection?: Pick<List.Props, "selectedItemId" | "onSelectionChange">,
+) => ReactNode;
 
 export function WorkspaceList({
   children,
@@ -45,8 +49,9 @@ export function WorkspaceList({
   const [query, setQuery] = useState("");
   if (!data?.length) return <Setup loading={isLoading} />;
   const value = data.some((w) => w.teamId === filter) ? filter : "all";
-  const renderList: RenderWorkspaceList = (rows, loading) => (
+  const renderList: RenderWorkspaceList = (rows, loading, selection) => (
     <List
+      {...selection}
       isLoading={loading}
       filtering={false}
       throttle
